@@ -3,7 +3,7 @@ description: IPTV M3U8 Viewer - Watch your favorite TV channels
 
 publish_to: "none"
 
-version: 1.3.29
+version: 1.4.0
 
 environment:
   sdk: ">=3.1.2 <4.0.0"
@@ -16,7 +16,7 @@ dependencies:
   ninja_material:
     git:
       url: https://github.com/Giuig/ninja_material.git
-      ref: v1.4.3
+      ref: v1.5.0
 
   # IPTV dependencies
   media_kit: ^1.1.11
