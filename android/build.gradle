@@ -1,0 +1,26 @@
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+// Use the new layout API instead of the deprecated buildDir
+rootProject.layout.buildDirectory = "../build"
+subprojects {
+    project.layout.buildDirectory = "${rootProject.layout.buildDirectory.get()}/${project.name}"
+}
+subprojects {
+    project.evaluationDependsOn(':app')
+}
+
+subprojects {
+    tasks.withType(JavaCompile).configureEach {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.layout.buildDirectory
+}

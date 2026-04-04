@@ -1,0 +1,27 @@
+slug: tvninja
+name: tvninja
+github: https://github.com/Giuig/tvninja
+description: >
+  IPTV / M3U8 player built with Flutter. Watch live TV channels on Android and in the browser with a persistent mini-player experience.
+web_url: https://giuig.github.io/tvninja/
+web_note: Some streams may not work in the browser due to CORS restrictions.
+build_commands: |
+  flutter pub get
+  flutter build apk --release
+  flutter build web --base-href=/tvninja/ --release
+features:
+  - "**M3U8 Playlist Support** — load and play IPTV streams from M3U8 playlists"
+  - "**Xtream Codes Support** — login with Xtream credentials for Live, VOD, and Series"
+  - "**IPTV.org Integration** — browse country-based playlists (60+ countries)"
+  - "**Favorites** — save channels for quick access from the home screen"
+  - "**Search** — find channels quickly by name"
+  - "**Group Filtering** — filter channels by category or group"
+  - "**Background Audio** — keep listening when the app is in the background (Android)"
+  - "**Audio Only Mode** — play audio only to save battery and data (Android)"
+  - "**Picture-in-Picture** — auto-PiP when leaving the fullscreen player (Android)"
+  - "**Persistent Mini-Player** — navigate the app while watching, tap to expand"
+  - "**Web Support** — watch streams in any browser with CORS proxy fallback"
+  - "**Material You** — dynamic color theming, light and dark mode"
+  - "**Google-Free** — no Google Play Services required, fully FOSS"
+kofi_url: https://ko-fi.com/giuig
+kofi_description: "I make FOSS apps in my free time, a coffee would help me keep them going!"

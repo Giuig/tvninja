@@ -1,0 +1,149 @@
+{
+  "@@locale": "en",
+  "loading": "Loading...",
+  "welcomeToTvninja": "Welcome to TV Ninja!",
+  "watchYourFavoriteChannels": "Watch your favorite TV channels",
+  "playlists": "Playlists",
+  "channels": "Channels",
+  "views": "Views",
+  "recentChannels": "Recent Channels",
+  "noChannelsYet": "No channels yet",
+  "addPlaylistHint": "Go to Playlists to add your first M3U8 playlist",
+  "addPlaylist": "Add Playlist",
+  "playlistName": "Playlist Name",
+  "playlistUrl": "Playlist URL (M3U8)",
+  "fillAllFields": "Please fill in all fields",
+  "playlistAdded": "Playlist added with {count} channels",
+  "noPlaylists": "No playlists yet",
+  "addFirstPlaylist": "Tap + to add your first M3U8 playlist",
+  "deletePlaylist": "Delete Playlist",
+  "confirmDeletePlaylist": "Are you sure you want to delete this playlist?",
+  "delete": "Delete",
+  "noChannels": "No channels in this playlist",
+  "all": "All",
+  "cancel": "Cancel",
+  "add": "Add",
+  "favorites": "Favorites",
+  "noFavorites": "No favorites yet",
+  "addFavoritesHint": "Tap the heart icon on any channel to add it to your favorites",
+  "searchChannels": "Search channels...",
+  "nChannels": "{count} channels",
+  "@nChannels": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "loadingStream": "Loading stream...",
+  "audioOnly": "Audio Only",
+  "noChannelsMatchFilter": "No channels match your filter",
+  "removeFromFavorites": "Remove from favorites?",
+  "removeFromFavoritesDetail": "Remove \"{name}\" from your favorites?",
+  "@removeFromFavoritesDetail": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "remove": "Remove",
+  "invalidUrl": "Invalid URL. Please enter a valid HTTP/HTTPS URL.",
+  "channelsLoaded": "{count} channels loaded",
+  "error": "Error: {message}",
+  "@error": {
+    "placeholders": {
+      "message": {
+        "type": "String"
+      }
+    }
+  },
+  "m3uUrl": "M3U / URL",
+  "xtreamCodes": "Xtream Codes",
+  "browseIptvOrg": "Browse IPTV.org",
+  "@browseIptvOrg": {
+    "description": "Title for browsing IPTV.org content"
+  },
+  "playlistNameHint": "My IPTV",
+  "portalUrl": "Portal URL",
+  "username": "Username",
+  "password": "Password",
+  "rename": "Rename",
+  "copyUrl": "Copy URL",
+  "urlCopied": "URL copied to clipboard",
+  "refresh": "Refresh",
+  "renamePlaylist": "Rename Playlist",
+  "nameLabel": "Name",
+  "noChannelsFound": "No channels found",
+  "switchToVideo": "Switch to Video",
+  "audioOnlyMode": "Audio Only Mode",
+  "unknownError": "Unknown error",
+  "nativeBackgroundAudio": "Native Background Audio",
+  "notificationControlsHint": "Use notification controls to play/pause",
+  "failedToLoadStream": "Failed to load stream",
+  "retry": "Retry",
+  "channelsLoadedForCountry": "{count} channels loaded for {country}",
+  "@channelsLoadedForCountry": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "country": {
+        "type": "String"
+      }
+    }
+  },
+  "failedToLoadCountry": "Failed to load {country}: {error}",
+  "@failedToLoadCountry": {
+    "placeholders": {
+      "country": {
+        "type": "String"
+      },
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "searchCountries": "Search countries...",
+  "loadingCountry": "Loading {country}...",
+  "@loadingCountry": {
+    "placeholders": {
+      "country": {
+        "type": "String"
+      }
+    }
+  },
+  "switchingToAudio": "Switching to audio...",
+  "failedToLoad": "Failed to load",
+  "videoNotAvailable": "Video not available",
+  "loadingChannels": "Loading {count} channels...",
+  "@loadingChannels": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "errorLoadingChannels": "Error loading channels: {error}",
+  "@errorLoadingChannels": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "playlistRefreshed": "Playlist refreshed",
+  "renamePlaylistHint": "Enter new name",
+  "deletePlaylistConfirmation": "This will permanently delete this playlist and all its channels.",
+  "copied": "Copied",
+  "noInternet": "No internet connection",
+  "streamError": "Stream error",
+  "tapToRetry": "Tap to retry",
+  "audioOnlyDescription": "Listen to audio only to save battery",
+  "switchToVideoDescription": "Switch back to video mode",
+  "previousChannel": "Previous channel",
+  "nextChannel": "Next channel",
+  "closePlayer": "Close player",
+  "expandPlayer": "Expand player",
+  "browse": "Browse"
+}

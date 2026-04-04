@@ -1,0 +1,22 @@
+Categories:
+  - Multimedia
+  - Internet
+License: MIT
+AuthorName: TV Ninja
+AuthorWebSite: https://github.com/Giuig
+SourceCode: https://github.com/Giuig/tvninja
+IssueTracker: https://github.com/Giuig/tvninja/issues
+
+AutoUpdateMode: Version %v
+UpdateCheckMode: Tags
+
+CurrentVersion: 1.2.6
+CurrentVersionCode: 10206
+
+AllowedAPKSigningKeys: []
+
+APK:
+  - versionName: 1.2.6
+    versionCode: 10206
+    commit: v1.2.6
+    subdir: android
