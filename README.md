@@ -53,7 +53,7 @@ I make FOSS apps in my free time, a coffee would help me keep them going! ☕
 ```bash
 # Prerequisites: Flutter SDK 3.41.5+
 flutter pub get
-flutter build apk --release
+flutter build apk --release --split-per-abi --no-tree-shake-icons --split-debug-info=build/debug-info
 flutter build web --base-href=/tvninja/ --release
 ```
 
