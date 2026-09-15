@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'video/stream_format_hint.dart';
 
 /// Cached emulator detection result — computed once per app session.
 bool? _cachedIsEmulator;
@@ -42,12 +43,17 @@ Future<void> applyLiveStreamMpvOptions(Player player) async {
     native.setProperty('network-timeout', '5');
     native.setProperty('reconnect-streamed', 'yes');
     native.setProperty('reconnect-delay-max', '2');
-    // Low retry count so mpv surfaces errors to Dart quickly; app-level
-    // _scheduleReconnect() handles the real backoff with UI state updates
+    // Low retry count so mpv surfaces errors to Dart quickly rather than
+    // retrying silently for a long time inside libmpv itself. This is mpv's
+    // own internal retry only — foreground video has no app-level backoff
+    // yet (that's `_scheduleReconnect()` in native_audio_service.dart, which
+    // only covers *background audio*). A foreground reconnect controller is
+    // planned for a later phase but does not exist today.
     native.setProperty('reconnect-max-retries', '2');
     // Limit lavf probing — fallback for streams whose format can't be guessed
     // from the URL. applyFormatHint() sets demuxer-lavf-format before open()
     // to skip probing entirely for known formats (.m3u8 → hls, .ts → mpegts).
+    // demuxer-lavf-probesize is a byte count (mpv default: autodetect).
     native.setProperty('demuxer-lavf-probesize', '250000');
     // demuxer-lavf-analyzeduration is in SECONDS, not microseconds (mpv
     // default: 5s). The previous value ('250000') was 250000 SECONDS —
@@ -84,18 +90,14 @@ void applyFormatHint(Player player, String url) {
   if (kIsWeb) return;
   try {
     final native = player.platform as dynamic;
-    final fmt = _guessFormat(url);
-    native.setProperty('demuxer-lavf-format', fmt ?? '');
+    final fmt = switch (guessStreamFormat(url)) {
+      StreamFormatHint.hls => 'hls',
+      StreamFormatHint.mpegTs => 'mpegts',
+      StreamFormatHint.mp4 => 'mp4',
+      StreamFormatHint.unknown => '',
+    };
+    native.setProperty('demuxer-lavf-format', fmt);
   } catch (_) {}
-}
-
-/// Infers the libav demuxer name from [url]'s path, or null if ambiguous.
-String? _guessFormat(String url) {
-  final path = Uri.tryParse(url)?.path.toLowerCase() ?? url.toLowerCase();
-  if (path.endsWith('.m3u8') || path.contains('.m3u8?')) return 'hls';
-  if (path.endsWith('.ts') || path.contains('.ts?')) return 'mpegts';
-  if (path.endsWith('.mp4') || path.contains('.mp4?')) return 'mp4';
-  return null;
 }
 
 /// Detects if the app is running on an emulator.

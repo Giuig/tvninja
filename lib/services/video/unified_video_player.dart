@@ -1,13 +1,16 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
-import 'package:tvninja/services/mpv_options.dart';
+import 'engines/exo_engine.dart';
+import 'engines/mpv_engine.dart';
+import 'engines/player_engine.dart';
+import 'reconnect_controller.dart';
 import 'web_video_player.dart';
 
 class UnifiedVideoPlayer extends StatefulWidget {
   final String url;
+  final String? userAgent;
   final String channelName;
   final String? channelLogo;
   final bool autoPlay;
@@ -22,6 +25,7 @@ class UnifiedVideoPlayer extends StatefulWidget {
   const UnifiedVideoPlayer({
     super.key,
     required this.url,
+    this.userAgent,
     this.channelName = '',
     this.channelLogo,
     this.autoPlay = true,
@@ -39,8 +43,11 @@ class UnifiedVideoPlayer extends StatefulWidget {
 }
 
 class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
-  Player? _player;
-  VideoController? _videoController;
+  /// The active playback engine: `ExoEngine` (Media3-backed `video_player`)
+  /// on Android, `MpvEngine` (media_kit) everywhere else non-web. `kIsWeb`
+  /// never reaches this field at all — see `build()`'s early return to
+  /// `WebVideoPlayerWidget`, unchanged since before Phase 3.
+  PlayerEngine? _engine;
   bool _isInitialized = false;
   bool _hasError = false;
   String _errorMessage = '';
@@ -48,17 +55,73 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   bool _isBuffering = false;
   bool _hasStartedPlaying = false;
 
-  StreamSubscription<bool>? _playingSubscription;
-  StreamSubscription<Duration>? _positionSubscription;
-  StreamSubscription<bool>? _bufferingSubscription;
+  /// True from the moment a reconnect attempt is first scheduled until it
+  /// either succeeds (first frame observed) or gives up after 5 attempts.
+  /// Exposed via [isReconnecting] / [reconnectAttempt] the same way
+  /// [isPlaying] is exposed, for a future "reconnecting (n/5)" UI — no such
+  /// UI exists yet, so this phase only makes the state available.
+  bool _isReconnecting = false;
+
+  /// Engine-agnostic backoff controller (Phase 2). Nothing about its
+  /// logic/API changed in Phase 3 — it still only ever calls through
+  /// [_reopenCurrentUrl] / [_teardownPlayback] / [_attemptReconnect], which
+  /// now delegate to whichever [PlayerEngine] is active instead of touching
+  /// mpv directly.
+  late final ReconnectController _reconnect;
+
   Timer? _bufferingWatchdog;
   bool _isSwitching = false;
   String? _pendingUrl;
 
+  /// The M3U's `#EXTVLCOPT:http-user-agent=` value, if any — some IPTV
+  /// providers (e.g. RAI's relinker) reject requests with the wrong UA. Built
+  /// once here (Task 3.3) so both engines take the same map rather than each
+  /// re-deriving it.
+  Map<String, String>? get _httpHeaders {
+    final ua = widget.userAgent;
+    return (ua == null || ua.isEmpty) ? null : {'User-Agent': ua};
+  }
+
+  /// Maps a thrown error (mpv path) or an `ExoEngine.onEngineError` value
+  /// (Exo path, Phase 4/REQ-016) to a user-facing message.
+  ///
+  /// COUPLING NOTE — read before changing any returned string here:
+  /// `player_page.dart`'s `_errorIcon()` string-matches this method's
+  /// *output* to choose an icon (see the matching note on that method).
+  /// Every string below must stay byte-identical to what it already was, or
+  /// the icon mapping silently breaks. Add new *inputs* to classify (new
+  /// `contains()` checks), never reword an existing *output* string.
   static String _friendlyError(Object e) {
     if (e is TimeoutException)
       return 'Connection timed out — stream did not respond';
     final msg = e.toString().toLowerCase();
+
+    // Media3/ExoPlayer errors (Task 4.2, REQ-015) do NOT get a dedicated
+    // `errorCodeName`-matching branch here, on purpose — traced against the
+    // actual pinned dependency (`video_player_android 2.9.5`, Media3 1.4.1)
+    // and confirmed it would be dead code:
+    // `ExoPlayerEventListener.onPlayerError` surfaces only
+    // `PlaybackException.toString()` to Dart ("Video player had error " +
+    // error) — `PlaybackException` has no `toString()` override, so that's
+    // `Throwable.toString()` (class name + `getMessage()`), and
+    // `errorCodeName` is never concatenated into it. Worse, for
+    // `TYPE_SOURCE` errors (the exact category `ERROR_CODE_IO_BAD_HTTP_STATUS`
+    // / `ERROR_CODE_IO_NETWORK_CONNECTION_FAILED` fall under —
+    // `ExoPlaybackException.createForSource()`), the derived message is a
+    // hardcoded literal, `"Source error"` — no HTTP status, no error-code
+    // name, no cause text at all. So a real Android 404/network failure
+    // reaches this method as literally `"...playbackexception: source
+    // error"`, which neither an `errorCodeName` string match nor the
+    // existing `404`/`network`/`socket`/`connection` substring rules below
+    // can classify — it falls through to `'Stream unavailable'` today, and
+    // no string-matching branch here can fix that (only
+    // `ERROR_CODE_DECODING_FORMAT_UNSUPPORTED`'s `TYPE_RENDERER` messages
+    // happen to include `", format="`, which the existing `'format'` rule
+    // below already catches — not something specific to this task).
+    // Distinguishing Media3 IO errors would need a newer `video_player`
+    // release that surfaces `errorCode` to Dart, or a custom platform-channel
+    // extension — both bigger than this task's scope; a legitimate future
+    // item, not something to half-build here as unreachable code.
     if (msg.contains('404')) return 'Stream not found (404)';
     if (msg.contains('403')) return 'Access denied (403)';
     if (msg.contains('401')) return 'Authentication required (401)';
@@ -76,6 +139,10 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   @override
   void initState() {
     super.initState();
+    _reconnect = ReconnectController(
+      onRetry: _attemptReconnect,
+      onGiveUp: _handleReconnectGiveUp,
+    );
     _initializePlayer();
   }
 
@@ -83,7 +150,23 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   void didUpdateWidget(UnifiedVideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url) {
-      if (_player != null && _isInitialized) {
+      if (_isSwitching) {
+        // A switch or a reconnect attempt is already in flight and using
+        // `_engine`. Both go through the same full teardown+reinit cycle
+        // (Bug 5), which briefly leaves `_engine == null` / `_isInitialized
+        // == false` *before* `_initializePlayer()` finishes recreating them —
+        // which would otherwise make the `else` branch below fire a second,
+        // concurrent `_initializePlayer()` call racing the in-flight one.
+        // `_isSwitching` stays true for the whole of `_attemptReconnect()`,
+        // so checking it here — before looking at `_engine`/`_isInitialized`
+        // at all — queues this URL the same way `_switchToUrl` already
+        // queues rapid zaps, instead of falling through to the unguarded
+        // branch. `_attemptReconnect()` (and `_switchToUrl` itself) drain
+        // `_pendingUrl` once they finish.
+        _pendingUrl = widget.url;
+        return;
+      }
+      if (_engine != null && _isInitialized) {
         _switchToUrl(widget.url);
       } else {
         _cleanup();
@@ -97,20 +180,157 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     _bufferingWatchdog = null;
     _isSwitching = false;
     _pendingUrl = null;
-    _playingSubscription?.cancel();
-    _positionSubscription?.cancel();
-    _bufferingSubscription?.cancel();
-    _player?.dispose();
-    _player = null;
-    _videoController = null;
-    _isInitialized = false;
+    // Cancels any pending retry timer *and* zeroes the attempt counter — a
+    // fresh engine (recreated below by the caller, or none at all if this is
+    // final teardown on dispose) starts reconnect state from scratch.
+    _reconnect.reset();
+    _isReconnecting = false;
+    unawaited(_teardownPlayback());
     _hasError = false;
-    _isPlaying = false;
-    _isBuffering = false;
-    _hasStartedPlaying = false;
     _errorMessage = '';
   }
 
+  /// Tears down the current playback engine: disposes it (which internally
+  /// cancels whatever stream subscriptions/listeners it set up) and drops
+  /// the reference. Every channel switch and reconnect attempt goes through
+  /// this + [_initializePlayer] to build a fresh engine from scratch — see
+  /// the "Bug 5" note on [_switchToUrl] for why `PlayerEngine.switchTo()`
+  /// (reusing an existing engine instance) is no longer called at all.
+  ///
+  /// All state resets happen synchronously (before the `await`) so a caller
+  /// that doesn't await this method (e.g. `_cleanup()`, which fires it via
+  /// `unawaited`) still sees `_engine`/`_isInitialized` etc. updated
+  /// immediately — matching the previous synchronous `_cleanup()` behaviour.
+  /// Only the actual `PlayerEngine.dispose()` work happens in the background
+  /// (or is awaited, for callers that need the old engine fully gone before
+  /// recreating a new one).
+  Future<void> _teardownPlayback() async {
+    final engineToDispose = _engine;
+    _engine = null;
+    _isInitialized = false;
+    _isPlaying = false;
+    _isBuffering = false;
+    _hasStartedPlaying = false;
+    await engineToDispose?.dispose();
+  }
+
+  /// Constructs the platform-appropriate engine (Task 3.2): Android always
+  /// routes to [ExoEngine] (PLAN.md decision 2 — no heuristic, no
+  /// try/fallback), everything else non-web to [MpvEngine]. `kIsWeb` is
+  /// checked by every caller of `_initializePlayer()` before this is ever
+  /// reached, so `Platform.isAndroid` is never evaluated on web — but this
+  /// method re-checks `!kIsWeb` defensively anyway, since a `dart:io`
+  /// `Platform` access on web is the "classic web-build break" PLAN.md warns
+  /// about (a runtime `UnsupportedError`, not a compile failure — `dart:io`
+  /// itself is importable on web, most of its members just throw if used).
+  PlayerEngine _createEngine() {
+    if (!kIsWeb && Platform.isAndroid) {
+      return ExoEngine(
+        onPlaying: _handleEnginePlaying,
+        onPosition: _handleEnginePosition,
+        onBuffering: _handleEngineBuffering,
+        onEngineError: _handleEngineError,
+        onToggleFullscreen: widget.onToggleFullscreen,
+      );
+    }
+    return MpvEngine(
+      onPlaying: _handleEnginePlaying,
+      onPosition: _handleEnginePosition,
+      onBuffering: _handleEngineBuffering,
+      onEngineError: _handleEngineError,
+      onToggleFullscreen: widget.onToggleFullscreen,
+    );
+  }
+
+  void _handleEnginePlaying(bool playing) {
+    _isPlaying = playing;
+    widget.onPlayingChanged?.call(playing);
+  }
+
+  void _handleEnginePosition(Duration position) {
+    if (position > Duration.zero && !_hasStartedPlaying && !_isSwitching) {
+      // _isSwitching guard: the old stream keeps playing while the engine's
+      // open()/switchTo() is in flight — its position events must not be
+      // counted as first frame of the new stream.
+      _hasStartedPlaying = true;
+      _bufferingWatchdog?.cancel();
+      _bufferingWatchdog = null;
+      // First frame after a reconnect (or a plain successful load) — stop
+      // the backoff chain and clear the reconnecting flag.
+      _reconnect.reset();
+      _isReconnecting = false;
+    }
+    widget.onPositionChanged?.call(position);
+  }
+
+  void _handleEngineBuffering(bool buffering) {
+    if (_isBuffering == buffering) return;
+    if (mounted) {
+      setState(() => _isBuffering = buffering);
+    }
+    if (buffering) {
+      // Watchdog fires on every buffering start (initial load or mid-play reconnect)
+      _bufferingWatchdog?.cancel();
+      _bufferingWatchdog = Timer(const Duration(seconds: 20), () {
+        if (mounted) {
+          _isReconnecting = true;
+          _reconnect.schedule();
+        }
+      });
+    } else {
+      _bufferingWatchdog?.cancel();
+      _bufferingWatchdog = null;
+    }
+  }
+
+  /// Handles [PlayerEngine.onEngineError] — an out-of-band error the engine
+  /// reports outside of a thrown `open()`/`switchTo()` exception. Today only
+  /// `ExoEngine` ever calls this, when `video_player`'s `value.hasError`
+  /// becomes true (already deduplicated there so this fires once per new
+  /// error, not every tick); `MpvEngine` never does, matching mpv's
+  /// pre-Phase-3 behaviour of not subscribing to `stream.error` either.
+  ///
+  /// Phase 4 (REQ-016): route a *reported* error into the same reconnect
+  /// chain the 20s buffering watchdogs drive, exactly like they do —
+  /// `_reconnect.schedule()` is safe to call redundantly (it just re-arms
+  /// the pending timer at the current attempt count rather than
+  /// double-counting, see `reconnect_controller.dart`), so this can fire
+  /// alongside a watchdog without racing it. This matters because an Exo
+  /// stream can report `hasError` without ever re-entering `isBuffering` —
+  /// without this, that failure would go unrecovered until something else
+  /// (or the user) noticed.
+  void _handleEngineError(Object error) {
+    debugPrint('[UnifiedVideoPlayer] engine-reported error: $error');
+    if (!mounted) return;
+    _isReconnecting = true;
+    _reconnect.schedule();
+  }
+
+  /// Bug 5 (found live-testing rapid channel zaps): a genuinely unresponsive
+  /// stream reached via `PlayerEngine.switchTo()` (reusing the existing
+  /// engine instance rather than rebuilding it) could leave the buffering
+  /// watchdog silently disarmed with no further recovery — confirmed via
+  /// extensive on-device tracing (a heartbeat timer proved the isolate/event
+  /// loop stayed healthy throughout; the watchdog `Timer` itself got
+  /// cancelled from somewhere in the reused-engine path within seconds of
+  /// being armed, well before its 20s deadline, with no corresponding
+  /// buffering callback ever observed for the stuck stream). Every
+  /// `_initializePlayer()`-driven load — the first channel, a hard
+  /// open()-failure error, and the (former) heavy reconnect path — has been
+  /// reliable in every test this session; only the reused-engine `switchTo()`
+  /// path ever showed this failure mode, and its root cause resisted
+  /// conclusive tracing even with targeted instrumentation.
+  ///
+  /// Fix: every channel switch now tears down the engine and rebuilds it
+  /// from scratch via [_teardownPlayback] + [_initializePlayer], exactly like
+  /// the first load and the (former) heavy reconnect path — `switchTo()` is
+  /// no longer called anywhere in this class. This loses mpv's "keep the
+  /// surface mounted" trick uniformly (already true for Exo per Task 3.4b;
+  /// now also true for mpv), trading a little zap smoothness for a path
+  /// that's actually proven not to deadlock. ExoPlayer opens fast enough
+  /// (~0.4-1.6s measured throughout this session) that this is a reasonable
+  /// trade — ~2-4x the RAI/Mediaset gap this whole plan exists to close, so
+  /// still a large net win even paying full-reinit cost on every zap.
   Future<void> _switchToUrl(String url) async {
     if (_isSwitching) {
       // Queue the latest request — drop intermediate ones (rapid zapping)
@@ -120,34 +340,37 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     _isSwitching = true;
     _pendingUrl = null;
 
-    // Cancel watchdog from the previous channel
+    // A fresh, user-initiated channel switch supersedes any reconnect that
+    // was in flight for the *previous* channel.
+    _reconnect.reset();
+    _isReconnecting = false;
+
     _bufferingWatchdog?.cancel();
     _bufferingWatchdog = null;
 
-    // Reset per-channel state — keep _isInitialized = true so the Video
-    // widget stays mounted (no surface destruction/recreation)
-    _hasStartedPlaying = false;
     if (mounted) setState(() { _isBuffering = true; _hasError = false; });
 
-    // Start a fresh watchdog. The buffering subscription won't restart it
-    // because _isBuffering is already true (early-exit guard fires).
-    _bufferingWatchdog = Timer(const Duration(seconds: 20), () {
-      if (mounted) {
-        widget.onError?.call(_hasStartedPlaying
-            ? 'Stream lost — connection timed out'
-            : 'Stream not responding — no data received');
-      }
-    });
-
     try {
-      applyFormatHint(_player!, url);  // sync — no yield before open()
-      // No .timeout() — the 20 s watchdog above handles unresponsive streams
-      await _player!.open(Media(url), play: widget.autoPlay);
+      // isReconnectAttempt: true so a failure rethrows here instead of
+      // _initializePlayer showing the error screen directly — a
+      // user-initiated switch gets the same reconnect/backoff chance a
+      // background reconnect does before giving up.
+      await _teardownPlayback();
+      await _initializePlayer(isReconnectAttempt: true);
     } catch (e) {
       _isSwitching = false;
-      // Hard open() failure — fall back to full player recreation
-      _cleanup();
-      _initializePlayer();
+      _isReconnecting = true;
+      _reconnect.schedule();
+      // If the user zapped again while this open() was failing, let that
+      // queued switch preempt the reconnect we just scheduled rather than
+      // racing it.
+      if (_pendingUrl != null && mounted && widget.url == _pendingUrl) {
+        final next = _pendingUrl!;
+        _pendingUrl = null;
+        _reconnect.reset();
+        _isReconnecting = false;
+        _switchToUrl(next);
+      }
       return;
     }
 
@@ -161,57 +384,67 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     }
   }
 
-  Future<void> _initializePlayer() async {
+  /// The reconnect controller's `onRetry` callback. Always does a full
+  /// teardown + recreate (Bug 5, see [_switchToUrl]'s doc comment) — there is
+  /// no lighter "reuse the engine" attempt any more, for any attempt number.
+  ///
+  /// Sets `_isSwitching` for the duration of the attempt so a channel zap
+  /// that arrives mid-reconnect gets queued into `_pendingUrl` (the same
+  /// rapid-zap guard `_switchToUrl` uses) instead of racing this method's
+  /// use of `_engine`. Any queued URL is processed once this attempt
+  /// finishes, preempting the reconnect chain rather than letting it race a
+  /// user-chosen channel.
+  Future<void> _attemptReconnect() async {
+    if (!mounted) return;
+    // A stale first-frame flag would prevent the position listener from ever
+    // detecting the reconnected stream's first frame again, which is what
+    // calls _reconnect.reset() on success.
+    _hasStartedPlaying = false;
+    _isSwitching = true;
+    try {
+      await _teardownPlayback();
+      await _initializePlayer(isReconnectAttempt: true);
+    } catch (_) {
+      // Swallow here too (in addition to the controller's own catch): this
+      // is a reconnect attempt, not the initial load, so no widget.onError
+      // call is appropriate — only onGiveUp surfaces an error to the UI.
+      // The controller's chain (schedule() called again after onRetry
+      // returns) picks up the next attempt automatically.
+    } finally {
+      _isSwitching = false;
+    }
+
+    if (_pendingUrl != null && mounted) {
+      final next = _pendingUrl!;
+      _pendingUrl = null;
+      _reconnect.reset();
+      _isReconnecting = false;
+      unawaited(_switchToUrl(next));
+    }
+  }
+
+  void _handleReconnectGiveUp() {
+    _isReconnecting = false;
+    if (!mounted) return;
+    final msg = _hasStartedPlaying
+        ? 'Stream lost — connection timed out'
+        : 'Stream not responding — no data received';
+    setState(() {
+      _hasError = true;
+      _errorMessage = msg;
+    });
+    widget.onError?.call(msg);
+  }
+
+  Future<void> _initializePlayer({bool isReconnectAttempt = false}) async {
     if (kIsWeb) {
       return;
     }
 
     try {
-      _player = Player();
-      _videoController = VideoController(_player!);
-      await applyLiveStreamMpvOptions(_player!);
-      applyFormatHint(_player!, widget.url);  // sync — no yield before open()
-
-      _playingSubscription = _player!.stream.playing.listen((playing) {
-        _isPlaying = playing;
-        widget.onPlayingChanged?.call(playing);
-      });
-
-      _positionSubscription = _player!.stream.position.listen((position) {
-        if (position > Duration.zero && !_hasStartedPlaying && !_isSwitching) {
-          // _isSwitching guard: the old stream keeps playing while player.open()
-          // is in flight — its position events must not be counted as first frame
-          // of the new stream.
-          _hasStartedPlaying = true;
-          _bufferingWatchdog?.cancel();
-          _bufferingWatchdog = null;
-        }
-        widget.onPositionChanged?.call(position);
-      });
-
-      _bufferingSubscription = _player!.stream.buffering.listen((buffering) {
-        if (_isBuffering == buffering) return;
-        if (mounted) {
-          setState(() => _isBuffering = buffering);
-        }
-        if (buffering) {
-          // Watchdog fires on every buffering start (initial load or mid-play reconnect)
-          _bufferingWatchdog?.cancel();
-          _bufferingWatchdog = Timer(const Duration(seconds: 20), () {
-            if (mounted) {
-              widget.onError?.call(_hasStartedPlaying
-                  ? 'Stream lost — connection timed out'
-                  : 'Stream not responding — no data received');
-            }
-          });
-        } else {
-          _bufferingWatchdog?.cancel();
-          _bufferingWatchdog = null;
-        }
-      });
-
-      await _player!
-          .open(Media(widget.url), play: widget.autoPlay)
+      _engine = _createEngine();
+      await _engine!
+          .open(widget.url, _httpHeaders, autoPlay: widget.autoPlay)
           .timeout(const Duration(seconds: 10));
 
       if (mounted) {
@@ -220,6 +453,13 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
         });
       }
     } catch (e) {
+      if (isReconnectAttempt) {
+        // Don't surface an error mid auto-reconnect and don't set _hasError
+        // (that would flash the error screen during an otherwise-invisible
+        // retry) — rethrow so the reconnect controller's chain continues;
+        // only onGiveUp (after 5 attempts) reaches widget.onError.
+        rethrow;
+      }
       final msg = _friendlyError(e);
       if (mounted) {
         setState(() {
@@ -241,7 +481,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     if (kIsWeb) {
       widget.onPlayingChanged?.call(true);
     } else {
-      await _player?.play();
+      await _engine?.play();
     }
   }
 
@@ -249,30 +489,53 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     if (kIsWeb) {
       widget.onPlayingChanged?.call(false);
     } else {
-      await _player?.pause();
+      await _engine?.pause();
     }
   }
 
   Future<void> stop() async {
     if (!kIsWeb) {
-      await _player?.stop();
+      await _engine?.stop();
     }
   }
 
   Future<void> seek(Duration position) async {
     if (!kIsWeb) {
-      await _player?.seek(position);
+      await _engine?.seek(position);
     }
   }
 
   Future<void> setVolume(double volume) async {
     if (!kIsWeb) {
-      await _player?.setVolume(volume);
+      await _engine?.setVolume(volume);
     }
   }
 
+  /// Restarts playback of the current URL from scratch. Unlike the automatic
+  /// reconnect path, this always does a full teardown + recreate rather than
+  /// trying the lighter reopen first — by the time a user reaches for the
+  /// manual Retry button, either auto-reconnect has already exhausted its 5
+  /// attempts (which already tried the light path), or something else asked
+  /// for an explicit hard reset, so there's no value in retrying the cheap
+  /// path again first.
+  Future<void> retry() async {
+    if (kIsWeb) return;
+    _reconnect.reset();
+    _isReconnecting = false;
+    if (mounted) {
+      setState(() {
+        _hasError = false;
+        _errorMessage = '';
+      });
+    }
+    await _teardownPlayback();
+    await _initializePlayer();
+  }
+
   bool get isPlaying => _isPlaying;
-  Duration get position => _player?.state.position ?? Duration.zero;
+  bool get isReconnecting => _isReconnecting;
+  int get reconnectAttempt => _reconnect.attempt;
+  Duration get position => _engine?.position ?? Duration.zero;
 
   @override
   Widget build(BuildContext context) {
@@ -302,45 +565,9 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       return widget.loadingWidget ?? _buildDefaultLoading();
     }
 
-    final insets = MediaQuery.of(context).padding;
-
-    // Custom fullscreen button - only on non-web, uses our callback
-    final fullscreenButton = kIsWeb
-        ? null
-        : IconButton(
-            onPressed: widget.onToggleFullscreen,
-            icon: const Icon(Icons.fullscreen),
-            iconSize: 32,
-            color: Colors.white,
-          );
-
-    final bottomButtonBar = [
-      const Spacer(),
-      if (fullscreenButton != null) fullscreenButton,
-    ];
-
     return Stack(
       children: [
-        MaterialVideoControlsTheme(
-          normal: MaterialVideoControlsThemeData(
-            padding: insets,
-            displaySeekBar: false,
-            bottomButtonBar: bottomButtonBar,
-            seekOnDoubleTap: false,
-            seekOnDoubleTapEnabledWhileControlsVisible: false,
-          ),
-          fullscreen: MaterialVideoControlsThemeData(
-            padding: insets,
-            displaySeekBar: false,
-            bottomButtonBar: bottomButtonBar,
-            seekOnDoubleTap: false,
-            seekOnDoubleTapEnabledWhileControlsVisible: false,
-          ),
-          child: Video(
-            controller: _videoController!,
-            controls: MaterialVideoControls,
-          ),
-        ),
+        _engine!.buildSurface(context),
         if (_isBuffering && widget.loadingWidget != null) widget.loadingWidget!,
       ],
     );
