@@ -215,18 +215,24 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   }
 
   /// Constructs the platform-appropriate engine (Task 3.2): Android routes
-  /// to [ExoEngine] (PLAN.md decision 2 — no heuristic, no try/fallback)
-  /// *except* for the narrow, explicit [_exoBlockedUrlPatterns] carve-out
-  /// below; everything else (non-Android, or an excepted URL) uses
-  /// [MpvEngine]. `kIsWeb` is checked by every caller of
-  /// `_initializePlayer()` before this is ever reached, so
+  /// to [ExoEngine] (PLAN.md decision 2 — no heuristic, no try/fallback),
+  /// everything else non-web uses [MpvEngine]. `kIsWeb` is checked by every
+  /// caller of `_initializePlayer()` before this is ever reached, so
   /// `Platform.isAndroid` is never evaluated on web — but this method
   /// re-checks `!kIsWeb` defensively anyway, since a `dart:io` `Platform`
   /// access on web is the "classic web-build break" PLAN.md warns about (a
   /// runtime `UnsupportedError`, not a compile failure — `dart:io` itself is
   /// importable on web, most of its members just throw if used).
+  ///
+  /// This used to carry a `_exoBlockedUrlPatterns` carve-out forcing RAI's
+  /// `mediapolis.rai.it` relinker onto [MpvEngine], because ExoPlayer's HTTP
+  /// stack is 403'd by that host. That's now fixed at the cause instead:
+  /// `ExoEngine` pre-resolves redirect-style URLs through [StreamUrlResolver]
+  /// on Dart's HTTP stack, so ExoPlayer never requests the relinker at all and
+  /// no per-host exception list is needed. Routing is back to a flat
+  /// platform decision with no URL inspection.
   PlayerEngine _createEngine() {
-    if (!kIsWeb && Platform.isAndroid && !_isKnownExoBlocked(widget.url)) {
+    if (!kIsWeb && Platform.isAndroid) {
       return ExoEngine(
         onPlaying: _handleEnginePlaying,
         onPosition: _handleEnginePosition,
@@ -243,36 +249,6 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       onToggleFullscreen: widget.onToggleFullscreen,
     );
   }
-
-  /// Known Android-ExoPlayer-specific stream blocks: a URL substring match
-  /// forces [MpvEngine] even on Android for that stream, instead of the
-  /// normal [ExoEngine] routing.
-  ///
-  /// Currently the whole `mediapolis.rai.it` relinker host. Confirmed live
-  /// (2026-09-15): RAI 1 (`cont=2606803`) 403s consistently on
-  /// `video_player_android`'s `DefaultHttpDataSource`
-  /// (`HttpURLConnection`-based) — 5/5 failures across both back-to-back
-  /// retries and a genuine ~5 minute gap between attempts (ruling out a
-  /// short-window rate limit). RAI 2 (`cont=308718`) was confirmed working
-  /// on `ExoEngine` earlier the same session, but a later re-test that same
-  /// day found it *also* 403ing — so this isn't a fixed, single-content-ID
-  /// problem; it's the whole relinker host, and apparently not even stable
-  /// per-channel over time. In every case, the *identical* URL + User-Agent
-  /// succeeds via a plain `curl` request in the same window, and RAI played
-  /// fine on this app's own previous mpv-based Android engine. Route the
-  /// whole host through mpv rather than re-enumerating content IDs one at a
-  /// time as more of them turn out to be affected.
-  ///
-  /// Leading hypothesis (not proven — would need a packet capture to
-  /// confirm): a TLS/HTTP-client fingerprinting difference between Android's
-  /// `HttpURLConnection` and other HTTP stacks, since a competing app's own
-  /// ExoPlayer-based player gets *past* whatever gate this is (it hits an
-  /// unrelated, self-recovering format-detection hiccup instead) rather than
-  /// a hard 403.
-  static const List<String> _exoBlockedUrlPatterns = ['mediapolis.rai.it'];
-
-  bool _isKnownExoBlocked(String url) =>
-      _exoBlockedUrlPatterns.any(url.contains);
 
   void _handleEnginePlaying(bool playing) {
     _isPlaying = playing;
