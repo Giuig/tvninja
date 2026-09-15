@@ -324,24 +324,31 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        // Three states: loading → show Stop; playing → show Pause; paused → show Play
-        val action = when {
-            isBuffering -> NotificationCompat.Action(
-                android.R.drawable.ic_delete,
-                "Stop",
-                createActionIntent(ACTION_STOP)
-            )
-            isPlaying -> NotificationCompat.Action(
+        // Toggle action: Pause while playing (including buffering — it's still
+        // conceptually "on"), Play otherwise.
+        val toggleAction = if (isPlaying || isBuffering) {
+            NotificationCompat.Action(
                 android.R.drawable.ic_media_pause,
                 "Pause",
                 createActionIntent(ACTION_PAUSE)
             )
-            else -> NotificationCompat.Action(
+        } else {
+            NotificationCompat.Action(
                 android.R.drawable.ic_media_play,
                 "Play",
                 createActionIntent(ACTION_PLAY)
             )
         }
+
+        // Always-present full-stop action, separate from pause — pausing
+        // keeps the foreground service (and its audio focus/wake lock)
+        // alive, stop tears it down entirely. Matches auraninja's
+        // play/pause + stop control set (wrapper_audio_handler.dart).
+        val stopAction = NotificationCompat.Action(
+            android.R.drawable.ic_delete,
+            "Stop",
+            createActionIntent(ACTION_STOP)
+        )
 
         val statusText = when {
             isBuffering -> "Loading…"
@@ -354,7 +361,8 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(contentIntent)
-            .addAction(action)
+            .addAction(toggleAction)
+            .addAction(stopAction)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -362,7 +370,7 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
             .setStyle(
                 androidx.media.app.NotificationCompat.MediaStyle()
                     .setMediaSession(mediaSession?.sessionToken)
-                    .setShowActionsInCompactView(0)
+                    .setShowActionsInCompactView(0, 1)
             )
             .setOnlyAlertOnce(true)
 
