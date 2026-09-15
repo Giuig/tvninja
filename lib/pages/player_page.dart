@@ -824,6 +824,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final videoPlayer = UnifiedVideoPlayer(
       key: _playerKey,
       url: _currentChannel.url,
+      userAgent: _currentChannel.userAgent,
       channelName: _currentChannel.name,
       channelLogo: _currentChannel.logo,
       autoPlay: true,

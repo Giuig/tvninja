@@ -29,6 +29,15 @@ Future<void> applyLiveStreamMpvOptions(Player player) async {
     // CRITICAL: never pause on low cache (live streams can't prefill)
     native.setProperty('cache-pause', 'no');
     native.setProperty('cache-pause-initial', 'no');
+    // TESTED & REVERTED: hls-bitrate='min' (force lowest HLS variant).
+    // Hypothesis was that mpv defaulting to the top bitrate variant (RAI:
+    // 1920x1080/~5.7Mbps) explained the gap vs. simpler low-bitrate sources
+    // (TV8: 854x480, opens in ~1.5s). Measured result: forcing RAI down to
+    // its lowest 768x432 variant did NOT reduce tap-to-first-frame time
+    // (~3.4s, same as before) and introduced real decode errors joining
+    // mid-GOP ("non-existing PPS referenced", "decode_slice_header error").
+    // Net negative — same speed, added corruption risk. The RAI/Mediaset
+    // vs TV8 gap is real but isn't explained by bitrate/resolution.
     // Reduced network timeout for faster initial connection failure
     native.setProperty('network-timeout', '5');
     native.setProperty('reconnect-streamed', 'yes');
@@ -40,7 +49,12 @@ Future<void> applyLiveStreamMpvOptions(Player player) async {
     // from the URL. applyFormatHint() sets demuxer-lavf-format before open()
     // to skip probing entirely for known formats (.m3u8 → hls, .ts → mpegts).
     native.setProperty('demuxer-lavf-probesize', '250000');
-    native.setProperty('demuxer-lavf-analyzeduration', '250000');
+    // demuxer-lavf-analyzeduration is in SECONDS, not microseconds (mpv
+    // default: 5s). The previous value ('250000') was 250000 SECONDS —
+    // out of range, silently rejected, so mpv fell back to its 5s default
+    // on every channel open. This was the dominant cost in tap-to-first-frame
+    // latency (measured ~3.4-4.7s gap matching the 5s default almost exactly).
+    native.setProperty('demuxer-lavf-analyzeduration', '0.5');
 
     // Emulator-aware hardware decode: disable on emulators to prevent freeze.
     // Result is cached after the first call — DeviceInfoPlugin is an async
