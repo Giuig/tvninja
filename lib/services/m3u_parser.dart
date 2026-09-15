@@ -11,6 +11,7 @@ class M3UChannel {
   final double duration;
   final String? licenseType;
   final String? licenseKey;
+  final String? userAgent;
   final String playlistId;
 
   M3UChannel({
@@ -22,6 +23,7 @@ class M3UChannel {
     this.duration = -1,
     this.licenseType,
     this.licenseKey,
+    this.userAgent,
     this.playlistId = '',
   });
 
@@ -40,6 +42,7 @@ class M3UChannel {
       group: group,
       playlistId: playlistId,
       type: ChannelType.live,
+      userAgent: userAgent,
     );
   }
 }
@@ -52,6 +55,9 @@ class M3UParser {
   static const String _M3U_HEADER_MARK = '#EXTM3U';
   static const String _M3U_INFO_MARK = '#EXTINF:';
   static const String _KODI_MARK = '#KODIPROP:';
+  static const String _VLC_OPT_MARK = '#EXTVLCOPT:';
+
+  static const String _VLC_OPT_USER_AGENT = 'http-user-agent';
 
   static const String _M3U_TVG_LOGO_MARK = 'tvg-logo';
   static const String _M3U_TVG_ID_MARK = 'tvg-id';
@@ -85,6 +91,7 @@ class M3UParser {
     String? currentLine;
     Match? infoMatch;
     final kodiMatches = <Match>[];
+    String? userAgent;
     bool skipHeader = true;
 
     for (int i = 0; i < lines.length; i++) {
@@ -107,13 +114,31 @@ class M3UParser {
           final match = _kodiPropRegex.firstMatch(currentLine.substring(_KODI_MARK.length).trim());
           if (match != null) kodiMatches.add(match);
         }
-        
+        if (currentLine.startsWith(_VLC_OPT_MARK)) {
+          final match = _kodiPropRegex.firstMatch(currentLine.substring(_VLC_OPT_MARK.length).trim());
+          if (match != null && match.group(1)?.trim() == _VLC_OPT_USER_AGENT) {
+            userAgent = match.group(2)?.trim();
+          }
+        }
+
         if (i + 1 >= lines.length) break;
         i++;
         currentLine = lines[i].trimRight();
       }
 
-      if (infoMatch == null || currentLine!.isEmpty || currentLine.startsWith('#')) continue;
+      if (infoMatch == null || currentLine!.isEmpty || currentLine.startsWith('#')) {
+        // Bug fix (found investigating the live-tested RAI/ExoPlayer 403 —
+        // see TASKS.md "Bug 2"): a malformed/skipped block must reset the
+        // same per-block state the successful path resets below, or its
+        // #EXTVLCOPT user-agent (and any #KODIPROP license fields) leak
+        // into the *next* channel, which may have no EXTVLCOPT of its own.
+        // Confirmed as a real, reproducible bug via
+        // test/m3u_parser_useragent_test.dart before this fix.
+        infoMatch = null;
+        kodiMatches.clear();
+        userAgent = null;
+        continue;
+      }
 
       final title = infoMatch.group(3)?.trim() ?? '';
       final duration = double.tryParse(infoMatch.group(1) ?? '-1') ?? -1;
@@ -151,11 +176,13 @@ class M3UParser {
         duration: duration,
         licenseType: kodiMetadata[_KODI_LICENSE_TYPE],
         licenseKey: kodiMetadata[_KODI_LICENSE_KEY],
+        userAgent: userAgent,
         playlistId: playlistId,
       ));
 
       infoMatch = null;
       kodiMatches.clear();
+      userAgent = null;
     }
 
     return channels;

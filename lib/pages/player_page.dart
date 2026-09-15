@@ -824,6 +824,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final videoPlayer = UnifiedVideoPlayer(
       key: _playerKey,
       url: _currentChannel.url,
+      userAgent: _currentChannel.userAgent,
       channelName: _currentChannel.name,
       channelLogo: _currentChannel.logo,
       autoPlay: true,
@@ -857,6 +858,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return url;
   }
 
+  // COUPLING NOTE (Task 4.2, REQ-015): this string-matches the *output* of
+  // `UnifiedVideoPlayer`'s `_friendlyError()` (unified_video_player.dart),
+  // which now classifies both mpv's thrown exceptions and ExoPlayer/Media3's
+  // `errorCodeName`-shaped errors down to the same fixed set of message
+  // strings on purpose, specifically so this icon mapping doesn't need a
+  // second, engine-aware branch here. If `_friendlyError()`'s wording ever
+  // changes, this method's `contains()` checks must be updated to match —
+  // see the matching note there.
   IconData _errorIcon() {
     final msg = _errorMessage.toLowerCase();
     if (msg.contains('timed out') || msg.contains('not responding'))
@@ -899,7 +908,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   _hasError = false;
                   _errorMessage = '';
                 });
-                _initializePlayer();
+                _playerKey.currentState?.retry();
               },
               icon: const Icon(Icons.refresh),
               label: Text(AppLocalizations.of(context)!.retry),

@@ -13,6 +13,7 @@ class Channel {
   final String? group;
   final String playlistId;
   final ChannelType type;
+  final String? userAgent;
 
   Channel({
     required this.name,
@@ -21,6 +22,7 @@ class Channel {
     this.group,
     this.playlistId = '',
     this.type = ChannelType.live,
+    this.userAgent,
   });
 
   /// Unique ID based on URL only - stable across app restarts and platforms
@@ -36,6 +38,7 @@ class Channel {
       'group': group,
       'playlistId': playlistId,
       'type': type.name,
+      'userAgent': userAgent,
     };
   }
 
@@ -50,6 +53,7 @@ class Channel {
         (e) => e.name == json['type'],
         orElse: () => ChannelType.live,
       ),
+      userAgent: json['userAgent'],
     );
   }
 
@@ -60,6 +64,7 @@ class Channel {
     String? group,
     String? playlistId,
     ChannelType? type,
+    String? userAgent,
   }) {
     return Channel(
       name: name ?? this.name,
@@ -68,6 +73,7 @@ class Channel {
       group: group ?? this.group,
       playlistId: playlistId ?? this.playlistId,
       type: type ?? this.type,
+      userAgent: userAgent ?? this.userAgent,
     );
   }
 }
