@@ -70,6 +70,22 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// mpv directly.
   late final ReconnectController _reconnect;
 
+  /// Bumped by every action that starts a new load or tears the current one
+  /// down. [_surfaceError] captures it before its network probe and re-checks
+  /// it afterwards, so a probe belonging to a superseded load can't report.
+  ///
+  /// Without this, the probe is a fire-and-forget network call of up to 4s
+  /// that outlives the failure it describes: reconnect gives up on channel A
+  /// and starts probing, the user zaps to channel B, B loads and plays, then
+  /// A's probe resolves and flips a healthy player to the error screen with a
+  /// message about a channel the user already left. `mounted` does not catch
+  /// this — the widget survives a channel zap; only [_cleanup] /
+  /// [_switchToUrl] / [_initializePlayer] running again distinguishes "this
+  /// probe still describes what's on screen" from "it doesn't".
+  ///
+  /// Same failure shape, and same remedy, as `ExoEngine._openGeneration`.
+  int _loadGeneration = 0;
+
   Timer? _bufferingWatchdog;
   bool _isSwitching = false;
   String? _pendingUrl;
@@ -168,6 +184,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   }
 
   void _cleanup() {
+    _loadGeneration++;
     _bufferingWatchdog?.cancel();
     _bufferingWatchdog = null;
     _isSwitching = false;
@@ -197,6 +214,10 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// (or is awaited, for callers that need the old engine fully gone before
   /// recreating a new one).
   Future<void> _teardownPlayback() async {
+    // Tearing down *is* the moment the current load stops being current, and
+    // it happens before `_initializePlayer()` bumps — so bump here too, or a
+    // probe could still report during the await in `_switchToUrl`/`retry()`.
+    _loadGeneration++;
     final engineToDispose = _engine;
     _engine = null;
     _isInitialized = false;
@@ -441,6 +462,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// ExoPlayer while answering 200 to Dart in the same second), and "the
   /// server is fine" is not a reason to tell the user nothing went wrong.
   Future<void> _surfaceError(String fallback) async {
+    final generation = _loadGeneration;
     final probe = await StreamDiagnostics.probe(widget.url, _httpHeaders);
     final msg = switch (probe) {
       StreamProbeResult.notFound => 'Stream not found (404)',
@@ -452,7 +474,10 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       StreamProbeResult.unknown =>
         fallback,
     };
-    if (!mounted) return;
+    // Superseded while probing (a zap, a retry, a fresh load) — this result
+    // describes a load nobody is waiting on any more. Reporting it here would
+    // overwrite whatever replaced it, including a stream that is playing fine.
+    if (!mounted || generation != _loadGeneration) return;
     setState(() {
       _hasError = true;
       _errorMessage = msg;
@@ -472,6 +497,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     if (kIsWeb) {
       return;
     }
+    _loadGeneration++;
 
     try {
       _engine = _createEngine();
