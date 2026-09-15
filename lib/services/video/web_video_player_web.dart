@@ -86,22 +86,35 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
     debugPrint('[WebVideo] Initializing player for URL: ${widget.url}');
     _playerId = 'player_${DateTime.now().millisecondsSinceEpoch}';
 
-    // Build list of URLs to try: HTTPS first, then proxies, then direct
+    // Build list of URLs to try: HTTPS/original first, then proxies, then direct
     final originalUrl = widget.url;
     final List<String> urlsToTry = [];
 
     if (originalUrl.startsWith('http://')) {
       // Try HTTPS version first (if server supports it)
-      final httpsUrl = originalUrl.replaceFirst('http://', 'https://');
-      urlsToTry.add(httpsUrl);
-      // Then proxy fallbacks
-      urlsToTry
-          .add('https://corsproxy.io/?${Uri.encodeComponent(originalUrl)}');
-      urlsToTry.add(
-          'https://api.allorigins.win/raw?url=${Uri.encodeComponent(originalUrl)}');
-      urlsToTry.add(originalUrl); // Last resort: direct HTTP
+      urlsToTry.add(originalUrl.replaceFirst('http://', 'https://'));
     } else {
       urlsToTry.add(originalUrl);
+    }
+
+    // Proxy fallback applies regardless of scheme — a stream can fail CORS on
+    // https:// too (e.g. a server sending a missing/invalid
+    // Access-Control-Allow-Origin header), not just on http:// mixed content.
+    //
+    // corsproxy.io was dropped: it now requires a paid API key for anonymous
+    // use (confirmed — it returns 403 "A valid API key is required" for
+    // every request), so it was pure dead weight. codetabs.com was tried as
+    // a replacement and also dropped: it reaches the target fine but never
+    // sends back an Access-Control-Allow-Origin header of its own, so the
+    // browser blocks it identically to having no proxy at all. allorigins.win
+    // is the only public proxy of the ones tested that ever actually works —
+    // it's slow and frequently times out, but it's better than nothing until
+    // this project can host its own proxy (see PR description).
+    urlsToTry.add(
+        'https://api.allorigins.win/raw?url=${Uri.encodeComponent(originalUrl)}');
+
+    if (originalUrl.startsWith('http://')) {
+      urlsToTry.add(originalUrl); // Last resort: direct HTTP
     }
 
     // Create JSON array of URLs for JavaScript
@@ -295,13 +308,41 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
             return;
           }
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            if (networkRecoveries < 3) {
+            // A response with a real HTTP status (403, 404, ...) is a
+            // definitive rejection — the browser only exposes data.response
+            // when the request wasn't itself blocked by CORS, so this never
+            // fires for an opaque CORS failure, only for a server that
+            // actually answered "no". Retrying that gains nothing; skip
+            // straight to the next source instead of burning ~12s per dead
+            // proxy (e.g. a proxy that requires an API key and always 403s).
+            var httpStatus = data.response && data.response.code;
+            var isDefinitiveHttpError = !!httpStatus && httpStatus >= 400;
+
+            if (!isDefinitiveHttpError && networkRecoveries < 3) {
               networkRecoveries++;
               var delay = networkRecoveries * 2000;
-              console.log('[WebVideo] Network error, retrying in ' + delay + 'ms (' + networkRecoveries + '/3)');
-              setTimeout(function() { if (hls) hls.startLoad(); }, delay);
+              console.log('[WebVideo] Network error (' + data.details + '), retrying in ' + delay + 'ms (' + networkRecoveries + '/3)');
+              setTimeout(function() {
+                if (!hls) return;
+                // startLoad() only resumes level/fragment loading after a
+                // manifest has already parsed — a manifest-level failure
+                // needs the source re-fetched from scratch or it retries
+                // forever without ever re-issuing a request.
+                if (data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR ||
+                    data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+                    data.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR) {
+                  hls.loadSource(url);
+                } else {
+                  hls.startLoad();
+                }
+              }, delay);
             } else {
               networkRecoveries = 0;
+              if (isDefinitiveHttpError) {
+                log('Server returned ' + httpStatus + ', trying next source...');
+                tryNextUrl();
+                return;
+              }
               log('Network error, trying next source...');
               tryNextUrl();
             }
