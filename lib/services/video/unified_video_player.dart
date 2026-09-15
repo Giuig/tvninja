@@ -6,6 +6,7 @@ import 'engines/exo_engine.dart';
 import 'engines/mpv_engine.dart';
 import 'engines/player_engine.dart';
 import 'reconnect_controller.dart';
+import 'stream_diagnostics.dart';
 import 'web_video_player.dart';
 
 class UnifiedVideoPlayer extends StatefulWidget {
@@ -96,32 +97,23 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       return 'Connection timed out — stream did not respond';
     final msg = e.toString().toLowerCase();
 
-    // Media3/ExoPlayer errors (Task 4.2, REQ-015) do NOT get a dedicated
-    // `errorCodeName`-matching branch here, on purpose — traced against the
-    // actual pinned dependency (`video_player_android 2.9.5`, Media3 1.4.1)
-    // and confirmed it would be dead code:
-    // `ExoPlayerEventListener.onPlayerError` surfaces only
-    // `PlaybackException.toString()` to Dart ("Video player had error " +
-    // error) — `PlaybackException` has no `toString()` override, so that's
-    // `Throwable.toString()` (class name + `getMessage()`), and
-    // `errorCodeName` is never concatenated into it. Worse, for
-    // `TYPE_SOURCE` errors (the exact category `ERROR_CODE_IO_BAD_HTTP_STATUS`
-    // / `ERROR_CODE_IO_NETWORK_CONNECTION_FAILED` fall under —
-    // `ExoPlaybackException.createForSource()`), the derived message is a
-    // hardcoded literal, `"Source error"` — no HTTP status, no error-code
-    // name, no cause text at all. So a real Android 404/network failure
-    // reaches this method as literally `"...playbackexception: source
-    // error"`, which neither an `errorCodeName` string match nor the
-    // existing `404`/`network`/`socket`/`connection` substring rules below
-    // can classify — it falls through to `'Stream unavailable'` today, and
-    // no string-matching branch here can fix that (only
-    // `ERROR_CODE_DECODING_FORMAT_UNSUPPORTED`'s `TYPE_RENDERER` messages
-    // happen to include `", format="`, which the existing `'format'` rule
-    // below already catches — not something specific to this task).
-    // Distinguishing Media3 IO errors would need a newer `video_player`
-    // release that surfaces `errorCode` to Dart, or a custom platform-channel
-    // extension — both bigger than this task's scope; a legitimate future
-    // item, not something to half-build here as unreachable code.
+    // Media3/ExoPlayer errors are deliberately NOT string-matched here, and
+    // no amount of extra `contains()` rules would help. Verified against the
+    // pinned `video_player_android 2.9.5` in the pub cache:
+    // `ExoPlayerEventListener.onPlayerError` reports only
+    // `"Video player had error " + PlaybackException.toString()`, and for the
+    // entire `TYPE_SOURCE` category — every HTTP failure — the derived
+    // message is the hardcoded literal `"Source error"`. A 404, a 403 and a
+    // DNS failure all arrive here as the byte-identical string
+    // `"...exoplaybackexception: source error"`, which matches none of the
+    // rules below and falls through to `'Stream unavailable'`.
+    //
+    // That is why the *specific* Android message comes from
+    // [_surfaceError]'s [StreamDiagnostics] probe instead — it re-requests
+    // the URL on Dart's HTTP stack and reads the status code Media3 won't
+    // hand over. This method stays the synchronous best-effort classifier
+    // (and remains exactly right for the mpv path, whose exceptions do carry
+    // real text); the probe refines its result when it can.
     if (msg.contains('404')) return 'Stream not found (404)';
     if (msg.contains('403')) return 'Access denied (403)';
     if (msg.contains('401')) return 'Authentication required (401)';
@@ -215,18 +207,24 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   }
 
   /// Constructs the platform-appropriate engine (Task 3.2): Android routes
-  /// to [ExoEngine] (PLAN.md decision 2 — no heuristic, no try/fallback)
-  /// *except* for the narrow, explicit [_exoBlockedUrlPatterns] carve-out
-  /// below; everything else (non-Android, or an excepted URL) uses
-  /// [MpvEngine]. `kIsWeb` is checked by every caller of
-  /// `_initializePlayer()` before this is ever reached, so
+  /// to [ExoEngine] (PLAN.md decision 2 — no heuristic, no try/fallback),
+  /// everything else non-web uses [MpvEngine]. `kIsWeb` is checked by every
+  /// caller of `_initializePlayer()` before this is ever reached, so
   /// `Platform.isAndroid` is never evaluated on web — but this method
   /// re-checks `!kIsWeb` defensively anyway, since a `dart:io` `Platform`
   /// access on web is the "classic web-build break" PLAN.md warns about (a
   /// runtime `UnsupportedError`, not a compile failure — `dart:io` itself is
   /// importable on web, most of its members just throw if used).
+  ///
+  /// This used to carry a `_exoBlockedUrlPatterns` carve-out forcing RAI's
+  /// `mediapolis.rai.it` relinker onto [MpvEngine], because ExoPlayer's HTTP
+  /// stack is 403'd by that host. That's now fixed at the cause instead:
+  /// `ExoEngine` pre-resolves redirect-style URLs through [StreamUrlResolver]
+  /// on Dart's HTTP stack, so ExoPlayer never requests the relinker at all and
+  /// no per-host exception list is needed. Routing is back to a flat
+  /// platform decision with no URL inspection.
   PlayerEngine _createEngine() {
-    if (!kIsWeb && Platform.isAndroid && !_isKnownExoBlocked(widget.url)) {
+    if (!kIsWeb && Platform.isAndroid) {
       return ExoEngine(
         onPlaying: _handleEnginePlaying,
         onPosition: _handleEnginePosition,
@@ -243,36 +241,6 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       onToggleFullscreen: widget.onToggleFullscreen,
     );
   }
-
-  /// Known Android-ExoPlayer-specific stream blocks: a URL substring match
-  /// forces [MpvEngine] even on Android for that stream, instead of the
-  /// normal [ExoEngine] routing.
-  ///
-  /// Currently the whole `mediapolis.rai.it` relinker host. Confirmed live
-  /// (2026-09-15): RAI 1 (`cont=2606803`) 403s consistently on
-  /// `video_player_android`'s `DefaultHttpDataSource`
-  /// (`HttpURLConnection`-based) — 5/5 failures across both back-to-back
-  /// retries and a genuine ~5 minute gap between attempts (ruling out a
-  /// short-window rate limit). RAI 2 (`cont=308718`) was confirmed working
-  /// on `ExoEngine` earlier the same session, but a later re-test that same
-  /// day found it *also* 403ing — so this isn't a fixed, single-content-ID
-  /// problem; it's the whole relinker host, and apparently not even stable
-  /// per-channel over time. In every case, the *identical* URL + User-Agent
-  /// succeeds via a plain `curl` request in the same window, and RAI played
-  /// fine on this app's own previous mpv-based Android engine. Route the
-  /// whole host through mpv rather than re-enumerating content IDs one at a
-  /// time as more of them turn out to be affected.
-  ///
-  /// Leading hypothesis (not proven — would need a packet capture to
-  /// confirm): a TLS/HTTP-client fingerprinting difference between Android's
-  /// `HttpURLConnection` and other HTTP stacks, since a competing app's own
-  /// ExoPlayer-based player gets *past* whatever gate this is (it hits an
-  /// unrelated, self-recovering format-detection hiccup instead) rather than
-  /// a hard 403.
-  static const List<String> _exoBlockedUrlPatterns = ['mediapolis.rai.it'];
-
-  bool _isKnownExoBlocked(String url) =>
-      _exoBlockedUrlPatterns.any(url.contains);
 
   void _handleEnginePlaying(bool playing) {
     _isPlaying = playing;
@@ -455,17 +423,49 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     }
   }
 
-  void _handleReconnectGiveUp() {
-    _isReconnecting = false;
+  /// Shows a failure to the user, upgrading [fallback] to a specific,
+  /// status-aware message when [StreamDiagnostics] can determine one.
+  ///
+  /// Needed because the Android engine cannot tell us *why* a load failed
+  /// (see [_friendlyError]) — without this, every HTTP failure on Android
+  /// reads as a generic message, a regression against the mpv path which
+  /// always surfaced 404/403/network specifically.
+  ///
+  /// Every returned string is byte-identical to one [_friendlyError] already
+  /// produces. That is mandatory, not stylistic: `player_page.dart`'s
+  /// `_errorIcon()` string-matches these exact strings to pick an icon — see
+  /// the COUPLING NOTE on [_friendlyError].
+  ///
+  /// A probe result of `ok` keeps [fallback] rather than claiming success:
+  /// the two HTTP stacks genuinely disagree sometimes (RAI's relinker 403'd
+  /// ExoPlayer while answering 200 to Dart in the same second), and "the
+  /// server is fine" is not a reason to tell the user nothing went wrong.
+  Future<void> _surfaceError(String fallback) async {
+    final probe = await StreamDiagnostics.probe(widget.url, _httpHeaders);
+    final msg = switch (probe) {
+      StreamProbeResult.notFound => 'Stream not found (404)',
+      StreamProbeResult.forbidden => 'Access denied (403)',
+      StreamProbeResult.unauthorized => 'Authentication required (401)',
+      StreamProbeResult.networkError => 'Network error — check your connection',
+      StreamProbeResult.serverError ||
+      StreamProbeResult.ok ||
+      StreamProbeResult.unknown =>
+        fallback,
+    };
     if (!mounted) return;
-    final msg = _hasStartedPlaying
-        ? 'Stream lost — connection timed out'
-        : 'Stream not responding — no data received';
     setState(() {
       _hasError = true;
       _errorMessage = msg;
     });
     widget.onError?.call(msg);
+  }
+
+  void _handleReconnectGiveUp() {
+    _isReconnecting = false;
+    if (!mounted) return;
+    unawaited(_surfaceError(_hasStartedPlaying
+        ? 'Stream lost — connection timed out'
+        : 'Stream not responding — no data received'));
   }
 
   Future<void> _initializePlayer({bool isReconnectAttempt = false}) async {
@@ -492,14 +492,10 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
         // only onGiveUp (after 5 attempts) reaches widget.onError.
         rethrow;
       }
-      final msg = _friendlyError(e);
-      if (mounted) {
-        setState(() {
-          _hasError = true;
-          _errorMessage = msg;
-        });
-      }
-      widget.onError?.call(msg);
+      // _friendlyError() is the synchronous best guess; _surfaceError()
+      // upgrades it to a status-aware message when a probe can tell us more
+      // (the Android engine can't — see _friendlyError's comment).
+      await _surfaceError(_friendlyError(e));
     }
   }
 

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../stream_format_hint.dart';
+import '../stream_url_resolver.dart';
 import 'player_engine.dart';
 
 /// ExoPlayer (Media3-backed `video_player`/`video_player_android`) playback
@@ -24,6 +25,26 @@ class ExoEngine extends PlayerEngine {
   });
 
   VideoPlayerController? _controller;
+
+  /// Bumped by every call that supersedes an in-flight [_createAndOpen]: a new
+  /// open/switch, a [stop], or a [dispose].
+  ///
+  /// Needed because [_createAndOpen] now `await`s [StreamUrlResolver.resolve]
+  /// *before* it constructs the controller, so there is a window — seconds
+  /// long, for exactly the relinker URLs that feature targets — where an open
+  /// is genuinely in flight while `_controller` is still null. [stop] no-ops
+  /// when `_controller` is null, so without this counter a user tapping
+  /// audio-only mode during that window (`player_page.dart`'s
+  /// `_enableAudioMode`) would have its stop silently swallowed: the resolve
+  /// would finish, build a controller and — the original `open()` having asked
+  /// for `autoPlay` — start playing video *after* the caller believed
+  /// playback was stopped, decoding the same stream alongside
+  /// `NativeAudioService`. Before the resolve await existed, `_controller` was
+  /// assigned synchronously and the window could not occur at all.
+  ///
+  /// The `!identical(_controller, controller)` check further down does not
+  /// cover this: it guards the *post*-construction `initialize()` window only.
+  int _openGeneration = 0;
 
   /// Remembered so [play] can lazily recreate a controller after [stop]
   /// disposes it (Task 3.4a — `video_player` has no `stop()`).
@@ -132,6 +153,11 @@ class ExoEngine extends PlayerEngine {
   /// live-TV service that resolves to HLS — so `unknown` now defaults to
   /// `VideoFormat.hls`, split out from the *known*-non-HLS-suffix cases
   /// below, which are unaffected and still map to `VideoFormat.other`.
+  ///
+  /// Since [StreamUrlResolver] now runs first, this is normally called with
+  /// the *resolved* URL, which usually does carry a real `.m3u8` suffix —
+  /// so the `unknown` branch has become the fallback for the cases where
+  /// resolution was skipped or failed, not the normal path for relinker URLs.
   VideoFormat _formatHintFor(String url) {
     switch (guessStreamFormat(url)) {
       case StreamFormatHint.hls:
@@ -148,16 +174,35 @@ class ExoEngine extends PlayerEngine {
     Map<String, String>? headers, {
     required bool autoPlay,
   }) async {
+    final generation = ++_openGeneration;
+
+    // Deliberately the *original* URL, not the resolved one: a resolved CDN
+    // URL carries a short-lived token (RAI's is ~150s), so play()'s lazy
+    // recreate after stop() must re-resolve from scratch rather than replay a
+    // stale one.
     _lastUrl = url;
     _lastHeaders = headers;
     _lastIsPlaying = false;
     _lastIsBuffering = false;
     _lastHasError = false;
 
+    // Redirect/relinker URLs are refused outright by ExoPlayer's HTTP stack on
+    // some providers (see StreamUrlResolver) — resolve on Dart's stack first
+    // and hand ExoPlayer the real playlist URL. Returns `url` untouched for
+    // direct playlist URLs and for every failure mode, so this is a no-op for
+    // the overwhelming majority of channels.
+    final playbackUrl = await StreamUrlResolver.resolve(url, headers);
+
+    // Superseded while we were resolving (stop/dispose, or a newer
+    // open/switch). Bail out before constructing anything — there is no
+    // controller to tear down yet, and whatever bumped the counter owns the
+    // engine's state now.
+    if (generation != _openGeneration) return;
+
     final controller = VideoPlayerController.networkUrl(
-      Uri.parse(url),
+      Uri.parse(playbackUrl),
       httpHeaders: headers ?? const {},
-      formatHint: _formatHintFor(url),
+      formatHint: _formatHintFor(playbackUrl),
     );
     _controller = controller;
     controller.addListener(_onControllerTick);
@@ -248,6 +293,11 @@ class ExoEngine extends PlayerEngine {
     // and never handing off to audio mode at all. The common case (a
     // healthy, already-initialized controller) disposes just as fast as
     // before — nothing here changes when disposal isn't blocked.
+    // Before the null check: an open may be in flight but pre-controller (see
+    // [_openGeneration]). Bumping here makes that open abandon itself rather
+    // than start playing after this stop.
+    _openGeneration++;
+
     final controller = _controller;
     if (controller == null) return;
     await controller.pause();
@@ -336,6 +386,7 @@ class ExoEngine extends PlayerEngine {
     // used to block on a stuck controller, the heavy reconnect path's own
     // 10s `open()` timeout would never even be reached, no matter how well
     // *that* timeout worked on its own.
+    _openGeneration++;
     final controller = _controller;
     _controller = null;
     controller?.removeListener(_onControllerTick);
