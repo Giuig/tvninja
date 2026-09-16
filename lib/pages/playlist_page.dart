@@ -543,7 +543,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
                     // Measured motivation: this emulator is 1600x900 at density
                     // 240, i.e. 1067 logical px wide. The single-column list
                     // showed ~5 of 116 channels there, spending most of every
-                    // row on empty space. Portrait (~411 logical) already showed
+                    // row on empty space. Portrait (~393 logical) already showed
                     // ~12 and was fine, which is why it keeps the ListView below.
                     final columns =
                         (constraints.maxWidth / 300).floor().clamp(1, 4);
@@ -559,6 +559,24 @@ class _PlaylistPageState extends State<PlaylistPage> {
                       );
                     }
 
+                    // The grid hands each tile a *tight* height, which the
+                    // ListView never did — so the extent must fit the tallest
+                    // thing the tile can contain, not the usual case.
+                    //
+                    // Budget: Card margin 4+4, inner Padding 8+8, then the
+                    // content, which is whichever is taller of the 40px logo or
+                    // the two text lines (bodyMedium ~20 + bodySmall ~16).
+                    // Those lines scale with the user's system font size and
+                    // nothing in this app clamps textScaler — so a hardcoded 68
+                    // overflowed at ~1.22x, i.e. Android's ordinary "Large" font
+                    // setting, not an extreme accessibility case. Deriving it
+                    // keeps every scale correct and costs nothing at default.
+                    final textScale = MediaQuery.textScalerOf(context).scale(1);
+                    final textHeight = 36.0 * textScale;
+                    final contentHeight =
+                        textHeight < 40.0 ? 40.0 : textHeight;
+                    final rowExtent = contentHeight + 16 + 8 + 4;
+
                     return GridView.builder(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       gridDelegate:
@@ -567,7 +585,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
                         // Fixed extent, not childAspectRatio: the row height must
                         // stay put as the column count changes, and an aspect
                         // ratio would make it do exactly the opposite.
-                        mainAxisExtent: 68,
+                        mainAxisExtent: rowExtent,
                       ),
                       itemCount: filteredChannels.length,
                       itemBuilder: tileAt,
