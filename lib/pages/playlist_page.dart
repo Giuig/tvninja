@@ -431,109 +431,146 @@ class _PlaylistPageState extends State<PlaylistPage> {
           child: filteredChannels.isEmpty
               ? Center(
                   child: Text(AppLocalizations.of(context)!.noChannelsFound))
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  itemCount: filteredChannels.length,
-                  itemBuilder: (context, index) {
-                    final channel = filteredChannels[index];
-                    final isFavorite = favoriteIds.contains(channel.uniqueId);
-                    return Card(
-                      clipBehavior: Clip.antiAlias,
-                      margin: const EdgeInsets.symmetric(
-                          vertical: 4, horizontal: 8),
-                      child: InkWell(
-                        onTap: () async {
-                          context
-                              .read<AppStatsNotifier>()
-                              .addToRecentlyWatched(channel);
-                          final currentUrl = NativeAudioService.currentUrl;
-                          final isAudioPlaying =
-                              NativeAudioService.currentState.isPlaying ||
-                                  NativeAudioService.isBuffering;
-                          final shouldStartInAudioOnly = currentUrl != null &&
-                              currentUrl == channel.url &&
-                              isAudioPlaying;
-                          if (currentUrl != null && currentUrl != channel.url) {
-                            await NativeAudioService.stop();
-                          }
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => PlayerPage(
-                                channel: channel,
-                                channels: filteredChannels,
-                                initialIndex: filteredChannels.indexOf(channel),
-                                initialAudioOnly: shouldStartInAudioOnly,
+              : LayoutBuilder(
+                  builder: (context, constraints) {
+                    Widget tileAt(BuildContext context, int index) {
+                      final channel = filteredChannels[index];
+                      final isFavorite = favoriteIds.contains(channel.uniqueId);
+                      return Card(
+                        clipBehavior: Clip.antiAlias,
+                        margin: const EdgeInsets.symmetric(
+                            vertical: 4, horizontal: 8),
+                        child: InkWell(
+                          onTap: () async {
+                            context
+                                .read<AppStatsNotifier>()
+                                .addToRecentlyWatched(channel);
+                            final currentUrl = NativeAudioService.currentUrl;
+                            final isAudioPlaying =
+                                NativeAudioService.currentState.isPlaying ||
+                                    NativeAudioService.isBuffering;
+                            final shouldStartInAudioOnly = currentUrl != null &&
+                                currentUrl == channel.url &&
+                                isAudioPlaying;
+                            if (currentUrl != null && currentUrl != channel.url) {
+                              await NativeAudioService.stop();
+                            }
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => PlayerPage(
+                                  channel: channel,
+                                  channels: filteredChannels,
+                                  initialIndex: filteredChannels.indexOf(channel),
+                                  initialAudioOnly: shouldStartInAudioOnly,
+                                ),
                               ),
-                            ),
-                          );
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 8),
-                          child: Row(
-                            children: [
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(4),
-                                child: ChannelLogo(
-                                  url: channel.logo,
-                                  width: 40,
-                                  height: 40,
-                                  fallbackBuilder: (_) => Container(
+                            );
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 8),
+                            child: Row(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: ChannelLogo(
+                                    url: channel.logo,
                                     width: 40,
                                     height: 40,
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .primaryContainer,
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    child: Icon(Icons.live_tv,
+                                    fallbackBuilder: (_) => Container(
+                                      width: 40,
+                                      height: 40,
+                                      decoration: BoxDecoration(
                                         color: Theme.of(context)
                                             .colorScheme
-                                            .onPrimaryContainer),
+                                            .primaryContainer,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Icon(Icons.live_tv,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onPrimaryContainer),
+                                    ),
                                   ),
                                 ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(channel.name,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis),
-                                    if (channel.group != null)
-                                      Text(channel.group!,
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(channel.name,
                                           maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall),
-                                  ],
+                                          overflow: TextOverflow.ellipsis),
+                                      if (channel.group != null)
+                                        Text(channel.group!,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                              SizedBox(
-                                width: 40,
-                                height: 40,
-                                child: IconButton(
-                                  padding: EdgeInsets.zero,
-                                  iconSize: 20,
-                                  icon: Icon(
-                                      isFavorite
-                                          ? Icons.favorite
-                                          : Icons.favorite_border,
-                                      color: isFavorite ? Colors.red : null),
-                                  onPressed: () => context
-                                      .read<AppStatsNotifier>()
-                                      .toggleFavorite(channel),
+                                SizedBox(
+                                  width: 40,
+                                  height: 40,
+                                  child: IconButton(
+                                    padding: EdgeInsets.zero,
+                                    iconSize: 20,
+                                    icon: Icon(
+                                        isFavorite
+                                            ? Icons.favorite
+                                            : Icons.favorite_border,
+                                        color: isFavorite ? Colors.red : null),
+                                    onPressed: () => context
+                                        .read<AppStatsNotifier>()
+                                        .toggleFavorite(channel),
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
+                      );
+                }
+
+                    // One column per ~300 logical px, derived from *width* and
+                    // not orientation: a phone in landscape and a tablet in
+                    // portrait can share a width and should lay out the same.
+                    //
+                    // Measured motivation: this emulator is 1600x900 at density
+                    // 240, i.e. 1067 logical px wide. The single-column list
+                    // showed ~5 of 116 channels there, spending most of every
+                    // row on empty space. Portrait (~411 logical) already showed
+                    // ~12 and was fine, which is why it keeps the ListView below.
+                    final columns =
+                        (constraints.maxWidth / 300).floor().clamp(1, 4);
+
+                    if (columns == 1) {
+                      // Compact widths keep the exact ListView they had, so
+                      // portrait cannot regress: a GridView would impose a fixed
+                      // row height on a layout that is already correct.
+                      return ListView.builder(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        itemCount: filteredChannels.length,
+                        itemBuilder: tileAt,
+                      );
+                    }
+
+                    return GridView.builder(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      gridDelegate:
+                          SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: columns,
+                        // Fixed extent, not childAspectRatio: the row height must
+                        // stay put as the column count changes, and an aspect
+                        // ratio would make it do exactly the opposite.
+                        mainAxisExtent: 68,
                       ),
+                      itemCount: filteredChannels.length,
+                      itemBuilder: tileAt,
                     );
                   },
                 ),
