@@ -326,7 +326,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// Reveals the overlay and (re)arms the auto-hide countdown.
   void _showControls() {
     _controlsHideTimer?.cancel();
-    if (mounted) setState(() => _controlsVisible = true);
+    _controlsHideTimer = null;
+    // Bail before arming a new timer, not just before setState. Every caller
+    // today is a live UI callback so this cannot fire unmounted — but the
+    // earlier shape created the timer unconditionally, so wiring this to any
+    // async listener (as several others in this file are) would have started
+    // a countdown on a disposed State. Narrowed now rather than left as a trap.
+    if (!mounted) return;
+    setState(() => _controlsVisible = true);
     _controlsHideTimer = Timer(_controlsHideAfter, () {
       if (mounted) setState(() => _controlsVisible = false);
     });
@@ -346,6 +353,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   ///
   /// Allowed under the owner's gesture rule because it performs no action of
   /// its own: it only surfaces buttons that are already real and tappable.
+  ///
+  /// Costs ~300ms of latency on every single tap: Flutter must wait out the
+  /// double-tap window before it can rule out a double-tap and settle the
+  /// arena on this callback. That delay is the price of the disambiguation
+  /// above, not a bug — but it is why the reveal feels a beat behind the
+  /// finger, and any future "make the overlay snappier" work has to start by
+  /// deciding whether the double-tap is worth keeping.
   void _toggleControls() {
     if (_controlsVisible) {
       _hideControls();
