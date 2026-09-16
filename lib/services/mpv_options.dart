@@ -45,10 +45,12 @@ Future<void> applyLiveStreamMpvOptions(Player player) async {
     native.setProperty('reconnect-delay-max', '2');
     // Low retry count so mpv surfaces errors to Dart quickly rather than
     // retrying silently for a long time inside libmpv itself. This is mpv's
-    // own internal retry only — foreground video has no app-level backoff
-    // yet (that's `_scheduleReconnect()` in native_audio_service.dart, which
-    // only covers *background audio*). A foreground reconnect controller is
-    // planned for a later phase but does not exist today.
+    // own internal retry only, and it deliberately stays low because real
+    // backoff lives above it: `video/reconnect_controller.dart` drives the
+    // foreground player's 5-attempt 2/4/8/16/30s chain, and
+    // `native_audio_service.dart`'s `_scheduleReconnect()` does the same for
+    // background audio. Raising this value stacks on top of those rather
+    // than replacing them, delaying how long a dead stream takes to surface.
     native.setProperty('reconnect-max-retries', '2');
     // Limit lavf probing — fallback for streams whose format can't be guessed
     // from the URL. applyFormatHint() sets demuxer-lavf-format before open()

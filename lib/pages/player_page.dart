@@ -858,14 +858,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return url;
   }
 
-  // COUPLING NOTE (Task 4.2, REQ-015): this string-matches the *output* of
-  // `UnifiedVideoPlayer`'s `_friendlyError()` (unified_video_player.dart),
-  // which now classifies both mpv's thrown exceptions and ExoPlayer/Media3's
-  // `errorCodeName`-shaped errors down to the same fixed set of message
-  // strings on purpose, specifically so this icon mapping doesn't need a
-  // second, engine-aware branch here. If `_friendlyError()`'s wording ever
-  // changes, this method's `contains()` checks must be updated to match —
-  // see the matching note there.
+  // COUPLING NOTE: this string-matches the *output* of
+  // `unified_video_player.dart`'s `_friendlyError()` and `_surfaceError()`.
+  //
+  // There is no `errorCodeName` matching and never was — an earlier version
+  // of this note claimed `_friendlyError()` classified "ExoPlayer/Media3
+  // `errorCodeName`-shaped errors", which was wrong and contradicted that
+  // method's own comment. Media3 surfaces every HTTP failure as the literal
+  // string "Source error" with no code in it, so on Android the specific
+  // message comes from `_surfaceError()`'s `StreamDiagnostics` probe instead,
+  // which re-requests the URL and reads the real status.
+  //
+  // Both of those produce the same fixed set of message strings on purpose,
+  // so this icon mapping needs no engine-aware branch. If either one's
+  // wording changes, the `contains()` checks below must change to match —
+  // see the matching notes there.
   IconData _errorIcon() {
     final msg = _errorMessage.toLowerCase();
     if (msg.contains('timed out') || msg.contains('not responding'))
@@ -908,6 +915,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   _hasError = false;
                   _errorMessage = '';
                 });
+                // `_buildBody()` returns `_buildError()` while `_hasError` is
+                // set, so the player is NOT in the tree here and
+                // `currentState` is null — this call is a no-op today. What
+                // actually restarts playback is the `setState` above: clearing
+                // `_hasError` remounts `UnifiedVideoPlayer`, whose `initState`
+                // reloads from scratch.
+                //
+                // The call is kept rather than deleted because it is the live
+                // path the moment anyone keeps the player mounted behind an
+                // error overlay instead of replacing it — at which point the
+                // remount stops happening and this becomes the only thing that
+                // reloads. Deleting it would make that future change silently
+                // break Retry.
                 _playerKey.currentState?.retry();
               },
               icon: const Icon(Icons.refresh),

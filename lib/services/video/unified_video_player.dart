@@ -497,13 +497,28 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     if (kIsWeb) {
       return;
     }
-    _loadGeneration++;
+    final generation = ++_loadGeneration;
 
     try {
       _engine = _createEngine();
       await _engine!
           .open(widget.url, _httpHeaders, autoPlay: widget.autoPlay)
           .timeout(const Duration(seconds: 10));
+
+      // `open()` can resolve *without* having actually opened anything:
+      // `ExoEngine._createAndOpen` returns early, normally, when its own
+      // `_openGeneration` check finds the load was superseded mid-resolve —
+      // leaving an engine whose controller was never built. Marking that
+      // `_isInitialized` would put `build()` on the `_engine!.buildSurface()`
+      // path for a controller-less engine: an empty surface with no error and
+      // no loading indicator, i.e. a player that looks loaded and shows
+      // nothing.
+      //
+      // Checking the generation here covers that and every other supersede
+      // (a zap, a stop, a dispose) with one test, at the layer that actually
+      // owns `_isInitialized`. Bailing out is safe because whatever bumped
+      // the counter owns the next load.
+      if (generation != _loadGeneration) return;
 
       if (mounted) {
         setState(() {
@@ -549,6 +564,15 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
 
   Future<void> stop() async {
     if (!kIsWeb) {
+      // Stopping ends the current load, so it must invalidate an in-flight
+      // one too. `ExoEngine.stop()` bumps its own `_openGeneration`, which is
+      // what makes a mid-resolve `_createAndOpen` abandon itself — but that
+      // engine-level counter is invisible here, so without this bump
+      // `_initializePlayer` would resume and mark the abandoned load
+      // initialised. This is the path `player_page._enableAudioMode()` takes
+      // when the user switches to audio-only while a channel is still
+      // opening.
+      _loadGeneration++;
       await _engine?.stop();
     }
   }
