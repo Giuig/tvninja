@@ -68,22 +68,28 @@ class HomePage extends StatelessWidget {
                       ],
                     ),
                   )
-                : LayoutBuilder(
-                    builder: (context, constraints) {
-                      final crossAxisCount =
-                          _getCrossAxisCount(constraints.maxWidth);
-                      return GridView.builder(
-                        padding: const EdgeInsets.all(4),
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: crossAxisCount,
-                          mainAxisSpacing: 4,
-                          crossAxisSpacing: 4,
-                        ),
-                        itemCount: favorites.length,
-                        itemBuilder: (context, index) {
-                          return _FavoriteCard(channel: favorites[index]);
-                        },
-                      );
+                : GridView.builder(
+                    padding: const EdgeInsets.all(4),
+                    // Max extent, not a fixed count: the tile keeps a constant
+                    // size at every width and the delegate derives how many
+                    // fit. The old breakpoint ladder (12/10/8/5/3 columns) did
+                    // the opposite of what it should — it made tiles *smaller*
+                    // as the screen grew: ~125px cells at 393 logical but only
+                    // ~101px at 1067. More room should buy comfortable tiles,
+                    // not more, tinier ones.
+                    //
+                    // 130 is chosen to hold phone portrait at its current 3
+                    // columns, so that case is unchanged; tablet landscape goes
+                    // from 10 cramped columns to 8 comfortable ones.
+                    gridDelegate:
+                        const SliverGridDelegateWithMaxCrossAxisExtent(
+                      maxCrossAxisExtent: 130,
+                      mainAxisSpacing: 4,
+                      crossAxisSpacing: 4,
+                    ),
+                    itemCount: favorites.length,
+                    itemBuilder: (context, index) {
+                      return _FavoriteCard(channel: favorites[index]);
                     },
                   ),
           ),
@@ -92,13 +98,6 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  int _getCrossAxisCount(double width) {
-    if (width >= 1200) return 12;
-    if (width >= 900) return 10;
-    if (width >= 600) return 8;
-    if (width >= 400) return 5;
-    return 3;
-  }
 }
 
 class _StatItem extends StatelessWidget {
@@ -129,14 +128,17 @@ class _FavoriteCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    // Get available height and calculate appropriate logo size
-    final screenWidth = MediaQuery.of(context).size.width;
-    final crossAxisCount = _getCrossAxisCount(screenWidth);
-    final cellWidth =
-        (screenWidth - 16 - (crossAxisCount - 1) * 8) / crossAxisCount;
-    final logoSize = (cellWidth * 0.35).clamp(20.0, 36.0);
-
-    return Card(
+    // Measure the cell we were actually given rather than re-deriving it from
+    // the screen. The old code recomputed the column count from
+    // MediaQuery screen width and guessed a cell width with hardcoded padding
+    // maths that did not even match the grid's real values — two independent
+    // derivations of the same number, from different inputs. They agreed only
+    // because the grid happened to span the whole screen, and would diverge
+    // the moment anything sits beside it (a NavigationRail, a split view),
+    // leaving the card sized for a cell that does not exist.
+    return LayoutBuilder(builder: (context, constraints) {
+      final logoSize = (constraints.maxWidth * 0.35).clamp(20.0, 36.0);
+      return Card(
       clipBehavior: Clip.antiAlias,
       margin: EdgeInsets.zero,
       child: InkWell(
@@ -156,18 +158,23 @@ class _FavoriteCard extends StatelessWidget {
               ),
               const SizedBox(height: 1),
               Text(channel.name,
+                  // Was fontSize: (logoSize * 0.25).clamp(7.0, 9.0) — a 7-9px
+                  // label, well under any legibility floor, and derived from
+                  // the cell maths removed above. bodySmall (~12) is safe here
+                  // because the logo sits in an Expanded and simply yields
+                  // space as the label grows with the user's font scale.
                   style: theme.textTheme.bodySmall?.copyWith(
                     fontWeight: FontWeight.w500,
-                    fontSize: (logoSize * 0.25).clamp(7.0, 9.0),
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.center),
             ],
           ),
+          ),
         ),
-      ),
-    );
+      );
+    });
   }
 
   Widget _buildDefaultLogo(ThemeData theme, double logoSize) {
@@ -185,13 +192,6 @@ class _FavoriteCard extends StatelessWidget {
     );
   }
 
-  int _getCrossAxisCount(double width) {
-    if (width >= 1200) return 12;
-    if (width >= 900) return 10;
-    if (width >= 600) return 8;
-    if (width >= 400) return 5;
-    return 3;
-  }
 
   Future<void> _playChannel(BuildContext context) async {
     final stats = context.read<AppStatsNotifier>();
