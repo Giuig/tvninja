@@ -104,6 +104,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _enterFullscreen() {
+    // Show the overlay across the transition: in fullscreen it is the *only*
+    // chrome, so entering with it hidden would leave a bare video and no
+    // visible way back. The auto-hide timer then clears it as usual.
+    _showControls();
     _previousOrientation = MediaQuery.of(context).orientation;
     setState(() => _isFullscreen = true);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -117,6 +121,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _exitFullscreen() {
+    _showControls();
     setState(() => _isFullscreen = false);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     if (!kIsWeb) {
@@ -202,6 +207,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _controlSubscription?.cancel();
     _bufferingSubscription?.cancel();
     _pipSubscription?.cancel();
+    _controlsHideTimer?.cancel();
     PipService.setFullscreenVideoMode(false);
     if (_isFullscreen) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -301,6 +307,51 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     setState(() {
       _audioOnlyMode = false;
     });
+  }
+
+  /// Whether the on-video control overlay is showing.
+  ///
+  /// Starts hidden, matching NewPipe (the reference the owner picked): a
+  /// freshly opened channel shows clean video. Only the overlay participates
+  /// — the AppBar and channel bar sit *beside* the video, not over it, so
+  /// hiding them would resize the video and jump the layout on every toggle.
+  bool _controlsVisible = false;
+
+  /// Auto-hide timer. Without it, a tap to check the controls leaves them
+  /// parked over the video for the rest of the channel.
+  Timer? _controlsHideTimer;
+
+  static const Duration _controlsHideAfter = Duration(seconds: 4);
+
+  /// Reveals the overlay and (re)arms the auto-hide countdown.
+  void _showControls() {
+    _controlsHideTimer?.cancel();
+    if (mounted) setState(() => _controlsVisible = true);
+    _controlsHideTimer = Timer(_controlsHideAfter, () {
+      if (mounted) setState(() => _controlsVisible = false);
+    });
+  }
+
+  void _hideControls() {
+    _controlsHideTimer?.cancel();
+    _controlsHideTimer = null;
+    if (mounted) setState(() => _controlsVisible = false);
+  }
+
+  /// Bound to `onTap` on the *same* `GestureDetector` as `onDoubleTap`, which
+  /// is what lets Flutter disambiguate the two: a genuine double-tap resolves
+  /// to `onDoubleTap` alone and never fires this first. Two separate detectors
+  /// in different layers would not — that collision is what
+  /// `exo_engine.dart`'s `buildSurface` comment warns about.
+  ///
+  /// Allowed under the owner's gesture rule because it performs no action of
+  /// its own: it only surfaces buttons that are already real and tappable.
+  void _toggleControls() {
+    if (_controlsVisible) {
+      _hideControls();
+    } else {
+      _showControls();
+    }
   }
 
   void _togglePlayPause() {
@@ -699,32 +750,28 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 ],
               ),
               actions: [
+                // Audio-only lives here, not in the on-video overlay:
+                // tapping it makes the video disappear, so a control hosted on
+                // the video would vanish along with the thing it just turned
+                // off, and the way back would have to live somewhere else. As
+                // an AppBar icon it is the same button in the same place in
+                // both directions — the AppBar stays visible in audio mode.
+                //
+                // Promoted out of the overflow menu, which held this as its
+                // only entry: two taps for one action, on the app's most
+                // distinctive feature. The menu is removed rather than left
+                // wrapping nothing — re-add it once there is more than one
+                // thing to put in it (the sleep timer).
                 if (hasMenuItems)
-                  PopupMenuButton<String>(
-                    icon: const Icon(Icons.more_vert, color: Colors.white),
-                    onSelected: (value) {
-                      if (value == 'audio') {
-                        _toggleAudioOnlyMode();
-                      }
-                    },
-                    itemBuilder: (context) => [
-                      PopupMenuItem(
-                        value: 'audio',
-                        child: Row(
-                          children: [
-                            Icon(
-                                _audioOnlyMode
-                                    ? Icons.videocam
-                                    : Icons.headphones,
-                                size: 20),
-                            const SizedBox(width: 12),
-                            Text(_audioOnlyMode
-                                ? AppLocalizations.of(context)!.switchToVideo
-                                : AppLocalizations.of(context)!.audioOnlyMode),
-                          ],
-                        ),
-                      ),
-                    ],
+                  IconButton(
+                    onPressed: _toggleAudioOnlyMode,
+                    icon: Icon(
+                      _audioOnlyMode ? Icons.videocam : Icons.headphones,
+                      color: Colors.white,
+                    ),
+                    tooltip: _audioOnlyMode
+                        ? AppLocalizations.of(context)!.switchToVideo
+                        : AppLocalizations.of(context)!.audioOnlyMode,
                   ),
               ],
             ),
@@ -738,43 +785,94 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   Positioned.fill(
                     child: GestureDetector(
                       behavior: HitTestBehavior.translucent,
+                      // Same detector for both, deliberately: Flutter then
+                      // disambiguates them, so a genuine double-tap resolves to
+                      // onDoubleTap alone instead of firing onTap first. Two
+                      // detectors in separate layers would collide — see the
+                      // note in exo_engine.dart's buildSurface.
+                      onTap: _toggleControls,
                       onDoubleTap: _toggleFullscreen,
                       child: const SizedBox.expand(),
                     ),
                   ),
-                // Fullscreen toggle, bottom-right over the video in *both*
-                // directions. Deliberately the same position windowed and
-                // fullscreen (owner request): the control does not move under
-                // the user's thumb when the mode changes, so entering and
-                // leaving fullscreen is the same tap target twice.
-                //
-                // It lives here rather than in the AppBar or the channel
-                // control bar because in fullscreen the AppBar is null and
-                // that bar is skipped — anything placed there would leave the
-                // double-tap gesture as the only way back out, and a gesture
-                // must never be the sole route to a control. The channel bar
-                // also only renders when `hasMultipleChannels`, so a
-                // single-channel playlist would have lost fullscreen entirely.
+                // On-video control overlay. Sits ABOVE the gesture layer so its
+                // buttons win the hit test, but the scrim inside is wrapped in
+                // its own IgnorePointer so a tap on empty space still falls
+                // through to the detector and hides the overlay again.
                 //
                 // Gated on `!_isInPipMode` so it cannot repeat the PiP leak
-                // that moving this out of `ExoEngine.buildSurface` fixed —
-                // that button was invisible to PiP state and painted itself
-                // over the thumbnail.
+                // that moving the fullscreen button out of
+                // `ExoEngine.buildSurface` fixed — that button was invisible to
+                // PiP state and painted itself over the thumbnail.
                 if (!_isInPipMode && !_audioOnlyMode && !_hasError)
-                  Positioned(
-                    right: 8,
-                    bottom: 8,
-                    child: SafeArea(
-                      child: IconButton(
-                        onPressed: _toggleFullscreen,
-                        icon: Icon(_isFullscreen
-                            ? Icons.fullscreen_exit
-                            : Icons.fullscreen),
-                        iconSize: 32,
-                        color: Colors.white,
-                        tooltip: _isFullscreen
-                            ? AppLocalizations.of(context)!.exitFullscreen
-                            : AppLocalizations.of(context)!.fullscreen,
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      ignoring: !_controlsVisible,
+                      child: AnimatedOpacity(
+                        opacity: _controlsVisible ? 1 : 0,
+                        duration: const Duration(milliseconds: 180),
+                        child: Stack(
+                          children: [
+                            const IgnorePointer(
+                              child: ColoredBox(
+                                color: Color(0x59000000),
+                                child: SizedBox.expand(),
+                              ),
+                            ),
+                            Center(
+                              child: IconButton(
+                                onPressed: () {
+                                  _togglePlayPause();
+                                  // Re-arm the countdown: the user is still
+                                  // interacting, so the overlay should not
+                                  // vanish mid-use.
+                                  _showControls();
+                                },
+                                icon: Icon(_isPlaying
+                                    ? Icons.pause_circle_filled
+                                    : Icons.play_circle_filled),
+                                iconSize: 64,
+                                color: Colors.white,
+                                tooltip: _isPlaying
+                                    ? AppLocalizations.of(context)!.pause
+                                    : AppLocalizations.of(context)!.play,
+                              ),
+                            ),
+                            // Fullscreen toggle, bottom-right in *both*
+                            // directions (owner request): the control does not
+                            // move under the thumb when the mode changes, so
+                            // entering and leaving fullscreen is the same tap
+                            // target twice.
+                            //
+                            // It belongs here rather than in the AppBar or the
+                            // channel bar because in fullscreen the AppBar is
+                            // null and that bar is skipped — either would leave
+                            // the double-tap as the only way back out, and a
+                            // gesture must never be the sole route to a
+                            // control. That bar also renders only when
+                            // hasMultipleChannels, so a single-channel playlist
+                            // would have lost fullscreen entirely.
+                            Positioned(
+                              right: 8,
+                              bottom: 8,
+                              child: SafeArea(
+                                child: IconButton(
+                                  onPressed: _toggleFullscreen,
+                                  icon: Icon(_isFullscreen
+                                      ? Icons.fullscreen_exit
+                                      : Icons.fullscreen),
+                                  iconSize: 32,
+                                  color: Colors.white,
+                                  tooltip: _isFullscreen
+                                      ? AppLocalizations.of(context)!
+                                          .exitFullscreen
+                                      : AppLocalizations.of(context)!
+                                          .fullscreen,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

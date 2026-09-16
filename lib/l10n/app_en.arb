@@ -141,6 +141,8 @@
   "tapToRetry": "Tap to retry",
   "audioOnlyDescription": "Listen to audio only to save battery",
   "switchToVideoDescription": "Switch back to video mode",
+  "play": "Play",
+  "pause": "Pause",
   "fullscreen": "Fullscreen",
   "exitFullscreen": "Exit fullscreen",
   "previousChannel": "Previous channel",

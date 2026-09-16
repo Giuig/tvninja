@@ -263,6 +263,12 @@ class AppLocalizationsFr extends AppLocalizations {
   String get switchToVideoDescription => 'Revenir au mode vidéo';
 
   @override
+  String get play => 'Play';
+
+  @override
+  String get pause => 'Pause';
+
+  @override
   String get fullscreen => 'Fullscreen';
 
   @override
