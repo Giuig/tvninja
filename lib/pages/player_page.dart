@@ -74,7 +74,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _initializePlayer();
     _initializeNativeAudio();
     _listenToPipState();
-    PipService.setFullscreenVideoMode(true);
+    _syncPipEligibility();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -249,11 +249,38 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
   }
 
+  /// Tells the native side whether picture-in-picture may be entered.
+  ///
+  /// The flag has **two** owners — audio-only mode and the error state — so it
+  /// is derived here instead of being assigned at each call site. Assigning it
+  /// per-site is what let it drift: `initState` set it unconditionally even
+  /// when starting in audio-only mode, and `_enableAudioMode`'s failure path
+  /// reverted `_audioOnlyMode` without restoring it, disabling PiP for the rest
+  /// of the session.
+  ///
+  /// The predicate is not new. `_buildBody` already gates the fullscreen button
+  /// and the control overlay on exactly `!_audioOnlyMode && !_hasError`; the
+  /// native flag was the one consumer left out of that rule, which is why
+  /// backgrounding a failed channel pinned its error screen into the PiP
+  /// window.
+  ///
+  /// Call it *after* the `setState` that changes either field, never before —
+  /// it reads them.
+  void _syncPipEligibility() {
+    PipService.setFullscreenVideoMode(!_audioOnlyMode && !_hasError);
+  }
+
   Future<void> _enableAudioMode() async {
     if (kIsWeb) {
       setState(() {
         _audioOnlyMode = true;
       });
+      // Inert today twice over — this branch is unreachable while the toggle
+      // that calls it is gated on `!kIsWeb`, and `setFullscreenVideoMode` itself
+      // no-ops under `kIsWeb`. Synced anyway: "agrees because it cannot run" is
+      // the same kind of luck this helper exists to remove, and it would start
+      // drifting again the moment either guard moves.
+      _syncPipEligibility();
       return;
     }
 
@@ -261,13 +288,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       await _playerKey.currentState?.stop();
       // Show the audio placeholder with spinner immediately — before play() is
       // called — so the user sees loading feedback from the very first frame.
-      // Also disable PiP: pressing home in audio-only mode should background
-      // the app normally, not enter picture-in-picture.
-      PipService.setFullscreenVideoMode(false);
       setState(() {
         _audioOnlyMode = true;
         _isBuffering = true;
       });
+      // Pressing home in audio-only mode should background the app normally,
+      // not enter picture-in-picture.
+      _syncPipEligibility();
 
       final success = await NativeAudioService.play(
         url: _currentChannel.url,
@@ -282,6 +309,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           _audioOnlyMode = false;
           _isBuffering = false;
         });
+        _syncPipEligibility();
         _playerKey.currentState?.play();
       }
     } catch (e) {
@@ -298,8 +326,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _isAudioModeActive = false;
     }
 
-    PipService.setFullscreenVideoMode(true);
-
     try {
       _playerKey.currentState?.play();
     } catch (_) {}
@@ -307,6 +333,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     setState(() {
       _audioOnlyMode = false;
     });
+    _syncPipEligibility();
   }
 
   /// Whether the on-video control overlay is showing.
@@ -392,6 +419,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _hasError = false;
       _errorMessage = '';
     });
+    _syncPipEligibility();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
@@ -404,6 +432,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _hasError = false;
       _errorMessage = '';
     });
+    _syncPipEligibility();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
@@ -420,6 +449,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _hasError = false;
       _errorMessage = '';
     });
+    _syncPipEligibility();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
@@ -1005,6 +1035,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           _hasError = true;
           _errorMessage = error ?? AppLocalizations.of(context)!.unknownError;
         });
+        // The reported bug: without this, backgrounding here pins the error
+        // screen into the PiP window, where its layout also overflows.
+        _syncPipEligibility();
       },
     );
 
@@ -1076,6 +1109,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   _hasError = false;
                   _errorMessage = '';
                 });
+                _syncPipEligibility();
                 // `_buildBody()` returns `_buildError()` while `_hasError` is
                 // set, so the player is NOT in the tree here and
                 // `currentState` is null — this call is a no-op today. What
