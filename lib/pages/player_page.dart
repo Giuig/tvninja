@@ -699,18 +699,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 ],
               ),
               actions: [
-                // Enter fullscreen. Lives here rather than over the video
-                // because an engine-drawn button cannot see `_isInPipMode`
-                // and leaked into the PiP thumbnail (see exo_engine.dart's
-                // buildSurface). The whole AppBar is already null in PiP and
-                // in fullscreen, so this is hidden in both for free.
-                // Meaningless in audio-only mode, hence the guard.
-                if (!_audioOnlyMode)
-                  IconButton(
-                    onPressed: _toggleFullscreen,
-                    icon: const Icon(Icons.fullscreen, color: Colors.white),
-                    tooltip: AppLocalizations.of(context)!.fullscreen,
-                  ),
                 if (hasMenuItems)
                   PopupMenuButton<String>(
                     icon: const Icon(Icons.more_vert, color: Colors.white),
@@ -754,27 +742,39 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       child: const SizedBox.expand(),
                     ),
                   ),
-                // Exit fullscreen. In fullscreen the AppBar is null and the
-                // channel control bar is hidden, so without an explicit
-                // button here the only way back out would be the double-tap
-                // gesture above — and a gesture must never be the sole route
-                // to a control (owner rule: controls are visible widgets).
-                // Gated on `!_isInPipMode` so it cannot repeat the leak this
-                // whole change fixes.
-                if (_isFullscreen &&
-                    !_isInPipMode &&
-                    !_audioOnlyMode &&
-                    !_hasError)
+                // Fullscreen toggle, bottom-right over the video in *both*
+                // directions. Deliberately the same position windowed and
+                // fullscreen (owner request): the control does not move under
+                // the user's thumb when the mode changes, so entering and
+                // leaving fullscreen is the same tap target twice.
+                //
+                // It lives here rather than in the AppBar or the channel
+                // control bar because in fullscreen the AppBar is null and
+                // that bar is skipped — anything placed there would leave the
+                // double-tap gesture as the only way back out, and a gesture
+                // must never be the sole route to a control. The channel bar
+                // also only renders when `hasMultipleChannels`, so a
+                // single-channel playlist would have lost fullscreen entirely.
+                //
+                // Gated on `!_isInPipMode` so it cannot repeat the PiP leak
+                // that moving this out of `ExoEngine.buildSurface` fixed —
+                // that button was invisible to PiP state and painted itself
+                // over the thumbnail.
+                if (!_isInPipMode && !_audioOnlyMode && !_hasError)
                   Positioned(
                     right: 8,
                     bottom: 8,
                     child: SafeArea(
                       child: IconButton(
                         onPressed: _toggleFullscreen,
-                        icon: const Icon(Icons.fullscreen_exit),
+                        icon: Icon(_isFullscreen
+                            ? Icons.fullscreen_exit
+                            : Icons.fullscreen),
                         iconSize: 32,
                         color: Colors.white,
-                        tooltip: AppLocalizations.of(context)!.exitFullscreen,
+                        tooltip: _isFullscreen
+                            ? AppLocalizations.of(context)!.exitFullscreen
+                            : AppLocalizations.of(context)!.fullscreen,
                       ),
                     ),
                   ),
@@ -873,12 +873,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         }
       },
       onError: (error) {
-        if (mounted) {
-          setState(() {
-            _hasError = true;
-            _errorMessage = error ?? AppLocalizations.of(context)!.unknownError;
-          });
-        }
+        if (!mounted) return;
+        // Leave fullscreen before showing the error. While `_isFullscreen` the
+        // AppBar is null, and `_buildError()` replaces the video entirely —
+        // taking the overlay fullscreen button and the double-tap detector
+        // with it, since both are gated on `!_hasError`. Without this, an
+        // error raised while fullscreen leaves *no* on-screen route out of
+        // fullscreen at all: not a button, not even the gesture. There is no
+        // `PopScope` either, so Android back would pop the whole page rather
+        // than return to windowed playback.
+        //
+        // Exiting is the right fix rather than un-gating the button: an error
+        // screen has no video to watch, so immersive landscape is wrong for it
+        // regardless. This predates the fullscreen-ownership change but that
+        // change is what made guaranteed escapability the rule, so it is fixed
+        // here rather than left as a known gap.
+        if (_isFullscreen) _exitFullscreen();
+        setState(() {
+          _hasError = true;
+          _errorMessage = error ?? AppLocalizations.of(context)!.unknownError;
+        });
       },
     );
 

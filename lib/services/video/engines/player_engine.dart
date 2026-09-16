@@ -47,9 +47,6 @@ abstract class PlayerEngine {
   /// exist and, for `ExoEngine`, to actually fire.
   final void Function(Object error) onEngineError;
 
-  /// Not one of PLAN.md Task 3.2's four native-event "callback sinks" — this
-
-
   /// Opens [url] fresh — the first open for this engine instance (construct
   /// the underlying player, wire its native event stream to the callbacks
   /// above, then open). [headers] is the (optional) `User-Agent` map built
