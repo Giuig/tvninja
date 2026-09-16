@@ -534,7 +534,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
                           ),
                         ),
                       );
-                }
+                    }
 
                     // One column per ~300 logical px, derived from *width* and
                     // not orientation: a phone in landscape and a tablet in
@@ -565,7 +565,16 @@ class _PlaylistPageState extends State<PlaylistPage> {
                     //
                     // Budget: Card margin 4+4, inner Padding 8+8, then the
                     // content, which is whichever is taller of the 40px logo or
-                    // the two text lines (bodyMedium ~20 + bodySmall ~16).
+                    // the two text lines. Note this is ONE uniform row height
+                    // for the whole grid, not a per-tile measurement — a
+                    // single-line channel simply gets the shared extent.
+                    //
+                    // 36.0 is bodyMedium (~20) + bodySmall (~16) at the stock
+                    // Material 3 scale; this app sets no custom textTheme. It is
+                    // NOT linked to Theme.of(context) — deriving it live is
+                    // unreliable because TextStyle.height is often null in the
+                    // Material defaults. So: if a custom textTheme is ever added,
+                    // revisit this number.
                     // Those lines scale with the user's system font size and
                     // nothing in this app clamps textScaler — so a hardcoded 68
                     // overflowed at ~1.22x, i.e. Android's ordinary "Large" font
