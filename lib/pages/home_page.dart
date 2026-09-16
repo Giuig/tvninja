@@ -97,7 +97,6 @@ class HomePage extends StatelessWidget {
       ),
     );
   }
-
 }
 
 class _StatItem extends StatelessWidget {
@@ -191,7 +190,6 @@ class _FavoriteCard extends StatelessWidget {
       ),
     );
   }
-
 
   Future<void> _playChannel(BuildContext context) async {
     final stats = context.read<AppStatsNotifier>();
