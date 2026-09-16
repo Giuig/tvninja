@@ -262,6 +262,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get switchToVideoDescription => 'Switch back to video mode';
 
   @override
+  String get fullscreen => 'Fullscreen';
+
+  @override
+  String get exitFullscreen => 'Exit fullscreen';
+
+  @override
   String get previousChannel => 'Previous channel';
 
   @override

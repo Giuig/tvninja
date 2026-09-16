@@ -699,6 +699,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 ],
               ),
               actions: [
+                // Enter fullscreen. Lives here rather than over the video
+                // because an engine-drawn button cannot see `_isInPipMode`
+                // and leaked into the PiP thumbnail (see exo_engine.dart's
+                // buildSurface). The whole AppBar is already null in PiP and
+                // in fullscreen, so this is hidden in both for free.
+                // Meaningless in audio-only mode, hence the guard.
+                if (!_audioOnlyMode)
+                  IconButton(
+                    onPressed: _toggleFullscreen,
+                    icon: const Icon(Icons.fullscreen, color: Colors.white),
+                    tooltip: AppLocalizations.of(context)!.fullscreen,
+                  ),
                 if (hasMenuItems)
                   PopupMenuButton<String>(
                     icon: const Icon(Icons.more_vert, color: Colors.white),
@@ -740,6 +752,30 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       behavior: HitTestBehavior.translucent,
                       onDoubleTap: _toggleFullscreen,
                       child: const SizedBox.expand(),
+                    ),
+                  ),
+                // Exit fullscreen. In fullscreen the AppBar is null and the
+                // channel control bar is hidden, so without an explicit
+                // button here the only way back out would be the double-tap
+                // gesture above — and a gesture must never be the sole route
+                // to a control (owner rule: controls are visible widgets).
+                // Gated on `!_isInPipMode` so it cannot repeat the leak this
+                // whole change fixes.
+                if (_isFullscreen &&
+                    !_isInPipMode &&
+                    !_audioOnlyMode &&
+                    !_hasError)
+                  Positioned(
+                    right: 8,
+                    bottom: 8,
+                    child: SafeArea(
+                      child: IconButton(
+                        onPressed: _toggleFullscreen,
+                        icon: const Icon(Icons.fullscreen_exit),
+                        iconSize: 32,
+                        color: Colors.white,
+                        tooltip: AppLocalizations.of(context)!.exitFullscreen,
+                      ),
                     ),
                   ),
               ],
@@ -844,7 +880,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           });
         }
       },
-      onToggleFullscreen: _toggleFullscreen,
     );
 
     return videoPlayer;

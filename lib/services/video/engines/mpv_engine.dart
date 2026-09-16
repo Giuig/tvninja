@@ -22,7 +22,6 @@ class MpvEngine extends PlayerEngine {
     required super.onPosition,
     required super.onBuffering,
     required super.onEngineError,
-    required super.onToggleFullscreen,
   });
 
   Player? _player;
@@ -92,17 +91,13 @@ class MpvEngine extends PlayerEngine {
   Widget buildSurface(BuildContext context) {
     final insets = MediaQuery.of(context).padding;
 
-    final fullscreenButton = IconButton(
-      onPressed: onToggleFullscreen,
-      icon: const Icon(Icons.fullscreen),
-      iconSize: 32,
-      color: Colors.white,
-    );
-
-    final bottomButtonBar = [
-      const Spacer(),
-      fullscreenButton,
-    ];
+    // Empty on purpose. This bar used to hold a fullscreen `IconButton`;
+    // fullscreen is now owned by `player_page` (an AppBar action plus an
+    // in-fullscreen exit button), so keeping one here would render a second,
+    // duplicate control on this path. The override itself stays — dropping
+    // it would restore media_kit's *default* bottom bar (position readout,
+    // volume, its own fullscreen button), which is not wanted either.
+    const bottomButtonBar = <Widget>[];
 
     return MaterialVideoControlsTheme(
       normal: MaterialVideoControlsThemeData(

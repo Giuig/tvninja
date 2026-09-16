@@ -19,7 +19,6 @@ class UnifiedVideoPlayer extends StatefulWidget {
   final void Function(Duration position)? onPositionChanged;
   final void Function(String? error)? onError;
   final void Function()? onCompleted;
-  final VoidCallback? onToggleFullscreen;
   final Widget? loadingWidget;
   final Widget? errorWidget;
 
@@ -34,7 +33,6 @@ class UnifiedVideoPlayer extends StatefulWidget {
     this.onPositionChanged,
     this.onError,
     this.onCompleted,
-    this.onToggleFullscreen,
     this.loadingWidget,
     this.errorWidget,
   });
@@ -251,7 +249,6 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
         onPosition: _handleEnginePosition,
         onBuffering: _handleEngineBuffering,
         onEngineError: _handleEngineError,
-        onToggleFullscreen: widget.onToggleFullscreen,
       );
     }
     return MpvEngine(
@@ -259,7 +256,6 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       onPosition: _handleEnginePosition,
       onBuffering: _handleEngineBuffering,
       onEngineError: _handleEngineError,
-      onToggleFullscreen: widget.onToggleFullscreen,
     );
   }
 

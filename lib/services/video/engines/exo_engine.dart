@@ -21,7 +21,6 @@ class ExoEngine extends PlayerEngine {
     required super.onPosition,
     required super.onBuffering,
     required super.onEngineError,
-    required super.onToggleFullscreen,
   });
 
   VideoPlayerController? _controller;
@@ -331,48 +330,35 @@ class ExoEngine extends PlayerEngine {
       return const SizedBox.shrink();
     }
 
-    // video_player ships no controls UI at all (Task 3.5). Re-audited what
-    // MaterialVideoControls actually contributed on the mpv path by reading
-    // media_kit_video-2.0.1's own `material.dart`: a bare tap only toggles
-    // the control bar's *visibility* (reveal/hide); `toggleFullscreen` is
-    // bound solely to the fullscreen `IconButton` *inside* that bar, not to
-    // the tap itself — these are two different gestures, not one. (An
-    // earlier version of this comment conflated them as a single
-    // "tap-to-reveal fullscreen button and a tap gesture" — corrected.)
+    // No `GestureDetector` at this layer, deliberately. `player_page.dart`
+    // owns a `Positioned.fill` `GestureDetector` (`onDoubleTap:
+    // _toggleFullscreen`) over the whole player body; adding a tap handler
+    // here would collide with it — a genuine double-tap would fire this
+    // widget's single-tap half first and then that `onDoubleTap`, a visible
+    // flicker the mpv path never had (there a tap only revealed/hid the
+    // control bar, so the two never meant the same thing).
     //
-    // A bare `onTap` here bound to `onToggleFullscreen` would also collide
-    // with `player_page.dart`'s own `Positioned.fill` `GestureDetector`
-    // (`onDoubleTap: _toggleFullscreen`) layered on top of the whole player
-    // body: a genuine double-tap would then toggle fullscreen via *this*
-    // widget's single-tap half first, then again via that `onDoubleTap` —
-    // visible flicker/no-op that never happened on the mpv path (there, tap
-    // = reveal/hide, never fullscreen, so no overlap of meaning existed).
+    // `video_player` ships no controls UI at all (Task 3.5), and per the
+    // owner's standing no-NEW-gestures rule nothing may be added here to
+    // compensate. Taps and double-taps pass straight through to
+    // `player_page.dart`'s overlay, unchanged from the mpv path.
+    // Video only — this engine renders no chrome of its own.
     //
-    // `player_page.dart`'s double-tap and the always-visible fullscreen
-    // `IconButton` below already cover fullscreen toggling without it, so the
-    // minimum equivalent here drops the redundant single-tap trigger
-    // entirely rather than rebuilding mpv's separate reveal/hide state just
-    // to keep a gesture nothing else exercises. No `GestureDetector` at this
-    // layer at all — taps/double-taps pass straight through to
-    // `player_page.dart`'s own overlay, unchanged from the mpv path.
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        AspectRatio(
-          aspectRatio: controller.value.aspectRatio,
-          child: VideoPlayer(controller),
-        ),
-        Positioned(
-          right: 8,
-          bottom: 8 + MediaQuery.of(context).padding.bottom,
-          child: IconButton(
-            onPressed: onToggleFullscreen,
-            icon: const Icon(Icons.fullscreen),
-            iconSize: 32,
-            color: Colors.white,
-          ),
-        ),
-      ],
+    // It used to stack an always-visible fullscreen `IconButton` over the
+    // video. That leaked into Picture-in-Picture: `player_page`'s own chrome
+    // hides itself when `_isInPipMode`, but a button drawn *inside*
+    // `buildSurface` knows nothing about PiP, so it stayed painted over the
+    // PiP thumbnail (confirmed on-device, 2026-09-16). The mpv path never
+    // showed it because media_kit's control bar is reveal-on-tap and hidden
+    // by default.
+    //
+    // Fullscreen is now `player_page`'s AppBar action plus its in-fullscreen
+    // exit button, both of which already gate on `_isInPipMode`. Do not
+    // reintroduce chrome at this layer — an engine cannot see the widget
+    // state that decides whether chrome should be visible.
+    return AspectRatio(
+      aspectRatio: controller.value.aspectRatio,
+      child: VideoPlayer(controller),
     );
   }
 

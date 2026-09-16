@@ -562,6 +562,18 @@ abstract class AppLocalizations {
   /// **'Switch back to video mode'**
   String get switchToVideoDescription;
 
+  /// No description provided for @fullscreen.
+  ///
+  /// In en, this message translates to:
+  /// **'Fullscreen'**
+  String get fullscreen;
+
+  /// No description provided for @exitFullscreen.
+  ///
+  /// In en, this message translates to:
+  /// **'Exit fullscreen'**
+  String get exitFullscreen;
+
   /// No description provided for @previousChannel.
   ///
   /// In en, this message translates to:

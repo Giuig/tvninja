@@ -26,7 +26,6 @@ abstract class PlayerEngine {
     required this.onPosition,
     required this.onBuffering,
     required this.onEngineError,
-    required this.onToggleFullscreen,
   });
 
   /// Fired whenever the engine's playing/paused state changes.
@@ -49,12 +48,7 @@ abstract class PlayerEngine {
   final void Function(Object error) onEngineError;
 
   /// Not one of PLAN.md Task 3.2's four native-event "callback sinks" — this
-  /// is UI wiring, passed straight through from `widget.onToggleFullscreen`
-  /// so [buildSurface] can bind the fullscreen button to it. Both engines'
-  /// controls need it (Task 3.5 asks for "the same fullscreen IconButton" on
-  /// both), so it lives on the shared base rather than being reinvented per
-  /// engine.
-  final VoidCallback? onToggleFullscreen;
+
 
   /// Opens [url] fresh — the first open for this engine instance (construct
   /// the underlying player, wire its native event stream to the callbacks
