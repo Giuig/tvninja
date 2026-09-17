@@ -639,7 +639,15 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       return widget.loadingWidget ?? _buildDefaultLoading();
     }
 
+    // `alignment` matters: `buildSurface` returns an `AspectRatio`, and a
+    // non-positioned `Stack` child is aligned to `AlignmentDirectional.topStart`
+    // by default. So whenever the video's aspect ratio did not match the box —
+    // which is every letterboxed case, including most fullscreen playback — the
+    // picture sat against the top-left corner with all of the slack below and to
+    // the right of it, instead of being centred. Reported as "fullscreen on
+    // device shows stream not centered".
     return Stack(
+      alignment: Alignment.center,
       children: [
         _engine!.buildSurface(context),
         if (_isBuffering && widget.loadingWidget != null) widget.loadingWidget!,

@@ -74,7 +74,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _initializePlayer();
     _initializeNativeAudio();
     _listenToPipState();
-    _syncPipEligibility();
+    _syncDerivedPlaybackState();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -117,7 +117,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         DeviceOrientation.landscapeRight,
       ]);
     }
-    WakelockPlus.enable();
+    _syncWakelock();
   }
 
   void _exitFullscreen() {
@@ -138,7 +138,29 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         ]);
       }
     }
-    WakelockPlus.disable();
+    _syncWakelock();
+  }
+
+  /// Holds the screen awake while there is video worth watching on screen.
+  ///
+  /// It used to be `enable()` in [_enterFullscreen] and `disable()` in
+  /// [_exitFullscreen], which meant the **windowed** player never held the lock
+  /// at all — the screen could sleep during ordinary playback, and leaving
+  /// fullscreen dropped the lock rather than handing it back to the windowed
+  /// player. Gated on the wrong condition, exactly like the PiP flag was.
+  ///
+  /// Audio-only deliberately does **not** hold it: the point of that mode is to
+  /// put the phone down. Neither does an error screen, which has nothing to
+  /// watch.
+  ///
+  /// Call it *after* the `setState` that changes any input — it reads them.
+  void _syncWakelock() {
+    final watchable = _isPlaying && !_audioOnlyMode && !_hasError;
+    if (watchable) {
+      WakelockPlus.enable();
+    } else {
+      WakelockPlus.disable();
+    }
   }
 
   Future<void> _initializeNativeAudio() async {
@@ -163,6 +185,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           setState(() {
             _isPlaying = newPlaying;
           });
+          _syncWakelock();
         }
       }
     });
@@ -209,9 +232,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _pipSubscription?.cancel();
     _controlsHideTimer?.cancel();
     PipService.setFullscreenVideoMode(false);
+    // Unconditionally, and NOT inside the `_isFullscreen` branch below where it
+    // used to sit. That was harmless only while the lock was taken in
+    // `_enterFullscreen` alone — a windowed player never held it, so there was
+    // nothing to release. Now that it is held for any watchable video, leaving
+    // the page while windowed would leak an awake screen for the rest of the
+    // session.
+    WakelockPlus.disable();
     if (_isFullscreen) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      WakelockPlus.disable();
       // Restore previous orientation if we're disposing while still in fullscreen
       if (!kIsWeb && _previousOrientation != null) {
         if (_previousOrientation == Orientation.landscape) {
@@ -266,6 +295,22 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   ///
   /// Call it *after* the `setState` that changes either field, never before —
   /// it reads them.
+  /// Single point where state derived from playback is reconciled.
+  ///
+  /// PiP eligibility and the wakelock read overlapping inputs
+  /// (`_audioOnlyMode`, `_hasError`, and for the wakelock `_isPlaying`), and
+  /// both were previously set at individual call sites. That is what let each of
+  /// them drift out of step with the state it was supposed to follow. Keeping
+  /// one entry point means a new path that changes any of those inputs has one
+  /// thing to remember, not two.
+  ///
+  /// Call it *after* the `setState` that changes any input — both helpers read
+  /// current field values.
+  void _syncDerivedPlaybackState() {
+    _syncPipEligibility();
+    _syncWakelock();
+  }
+
   void _syncPipEligibility() {
     PipService.setFullscreenVideoMode(!_audioOnlyMode && !_hasError);
   }
@@ -280,7 +325,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // no-ops under `kIsWeb`. Synced anyway: "agrees because it cannot run" is
       // the same kind of luck this helper exists to remove, and it would start
       // drifting again the moment either guard moves.
-      _syncPipEligibility();
+      _syncDerivedPlaybackState();
       return;
     }
 
@@ -294,7 +339,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       });
       // Pressing home in audio-only mode should background the app normally,
       // not enter picture-in-picture.
-      _syncPipEligibility();
+      _syncDerivedPlaybackState();
 
       final success = await NativeAudioService.play(
         url: _currentChannel.url,
@@ -303,13 +348,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       );
 
       if (success) {
-        setState(() => _isAudioModeActive = true);
+        setState(() {
+          _isAudioModeActive = true;
+          // Re-read the live value rather than waiting for the next event.
+          //
+          // `_isBuffering` was set true above, before this flag existed, and the
+          // buffering listener drops anything arriving while `_isAudioModeActive`
+          // is still false. So when the stream settled *during* the await — the
+          // common case on a fast connection — the "no longer buffering" event
+          // was discarded and nothing later re-sent it, leaving the spinner
+          // turning over audio that was already playing. That is the "sometimes"
+          // in the report: it depends purely on whether the event beat this line.
+          _isBuffering = NativeAudioService.isBuffering;
+        });
       } else {
         setState(() {
           _audioOnlyMode = false;
           _isBuffering = false;
         });
-        _syncPipEligibility();
+        _syncDerivedPlaybackState();
         _playerKey.currentState?.play();
       }
     } catch (e) {
@@ -333,7 +390,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     setState(() {
       _audioOnlyMode = false;
     });
-    _syncPipEligibility();
+    _syncDerivedPlaybackState();
   }
 
   /// Whether the on-video control overlay is showing.
@@ -419,7 +476,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _hasError = false;
       _errorMessage = '';
     });
-    _syncPipEligibility();
+    _syncDerivedPlaybackState();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
@@ -432,7 +489,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _hasError = false;
       _errorMessage = '';
     });
-    _syncPipEligibility();
+    _syncDerivedPlaybackState();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
@@ -449,7 +506,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _hasError = false;
       _errorMessage = '';
     });
-    _syncPipEligibility();
+    _syncDerivedPlaybackState();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
@@ -822,7 +879,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       body: Column(
         children: [
           Expanded(
-            child: Stack(
+            // Black behind everything in the player area. Without it the
+            // letterbox bars around a centred video showed the Scaffold's own
+            // background, so the control scrim — which covers this whole box —
+            // visibly extended past the picture onto page-coloured margins.
+            // Black is what every other player does with that slack, and it
+            // makes the scrim read as belonging to the video.
+            child: ColoredBox(
+              color: Colors.black,
+              child: Stack(
               children: [
                 _buildBody(),
                 if (!_audioOnlyMode && !_hasError)
@@ -922,6 +987,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   ),
               ],
             ),
+            ),
           ),
           if (hasMultipleChannels && !_isInPipMode && !_isFullscreen) ...[
             _buildExpandableChannelList(),
@@ -1012,6 +1078,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           setState(() {
             _isPlaying = playing;
           });
+          _syncWakelock();
         }
       },
       onError: (error) {
@@ -1037,7 +1104,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         });
         // The reported bug: without this, backgrounding here pins the error
         // screen into the PiP window, where its layout also overflows.
-        _syncPipEligibility();
+        _syncDerivedPlaybackState();
       },
     );
 
@@ -1109,7 +1176,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   _hasError = false;
                   _errorMessage = '';
                 });
-                _syncPipEligibility();
+                _syncDerivedPlaybackState();
                 // `_buildBody()` returns `_buildError()` while `_hasError` is
                 // set, so the player is NOT in the tree here and
                 // `currentState` is null — this call is a no-op today. What
