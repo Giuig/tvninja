@@ -88,7 +88,7 @@ class MpvEngine extends PlayerEngine {
   Duration get position => _player?.state.position ?? Duration.zero;
 
   @override
-  Widget buildSurface(BuildContext context) {
+  Widget buildSurface(BuildContext context, {bool stretch = false}) {
     final insets = MediaQuery.of(context).padding;
 
     // Empty on purpose. This bar used to hold a fullscreen `IconButton`;
@@ -117,6 +117,9 @@ class MpvEngine extends PlayerEngine {
       child: Video(
         controller: _videoController!,
         controls: MaterialVideoControls,
+        // `fill` distorts to fill the box; `contain` is media_kit's own
+        // default and preserves the stream's shape.
+        fit: stretch ? BoxFit.fill : BoxFit.contain,
       ),
     );
   }

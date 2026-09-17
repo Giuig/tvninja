@@ -61,6 +61,30 @@ class MainActivity : FlutterFragmentActivity() {
         super.onDestroy()
     }
 
+    /**
+     * Auto-enters picture-in-picture whenever the user leaves the app during
+     * eligible playback — Home, the recents key, or switching apps.
+     *
+     * KEPT DELIBERATELY (owner decision, 2026-09-17). The consequence is known
+     * and accepted: because a PiP window lives in its own pinned task, the app
+     * keeps playing after the user removes it from Recents — verified on the
+     * emulator that even the launcher's "clear all" leaves it playing, with the
+     * process alive and ExoPlayer still decoding. Only a force-stop clears it.
+     * The owner reported this ("my phone says the app is still active"), was
+     * shown the cause, and chose to keep the behaviour as it is.
+     *
+     * So this is NOT an open bug. Do not "fix" it by adding a foreground service
+     * for video just to get Service.onTaskRemoved (it may never fire for a
+     * pinned stack, and it costs a permanent notification), and do not make PiP
+     * conditional here without asking — making PiP explicit rather than
+     * automatic was offered and declined for now. The analysis, including the
+     * options that were ruled out and why, is in the ninjapp-claude-rules repo
+     * under tvninja/pip-task-removal/RESEARCH.md.
+     *
+     * The one part of the report that WAS a defect is fixed separately: the
+     * screen-on wakelock is no longer held while in PiP. See
+     * player_page.dart's _syncWakelock.
+     */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (isPipSupported() && isFullscreenVideoMode) {

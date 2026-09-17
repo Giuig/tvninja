@@ -40,6 +40,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _isInPipMode = false;
   bool _channelListExpanded = false;
   bool _isFullscreen = false;
+
+  /// Fullscreen-only: fill the screen instead of letterboxing.
+  ///
+  /// Deliberately **not** persisted and reset on leaving fullscreen. Stretching
+  /// distorts the picture, so it is a per-session "I want the bars gone right
+  /// now" choice, not a setting someone should be able to leave on by accident
+  /// and then wonder why everyone looks wide.
+  bool _stretchToFill = false;
   Orientation? _previousOrientation;
 
   late List<Channel> _channels;
@@ -91,6 +99,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         setState(() {
           _isInPipMode = isInPip;
         });
+        // `_isInPipMode` is an input to the wakelock now, so entering or leaving
+        // PiP has to reconcile it like every other mutation does. Without this
+        // the flag would flip and the lock would keep whatever value it had —
+        // the exact drift the sync helpers exist to prevent.
+        _syncWakelock();
       }
     });
   }
@@ -122,7 +135,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _exitFullscreen() {
     _showControls();
-    setState(() => _isFullscreen = false);
+    setState(() {
+      _isFullscreen = false;
+      _stretchToFill = false;
+    });
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     if (!kIsWeb) {
       // Restore previous orientation if known
@@ -153,9 +169,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// put the phone down. Neither does an error screen, which has nothing to
   /// watch.
   ///
+  /// **Nor does picture-in-picture.** A PiP window is something you glance at
+  /// beside another app, not something that should defeat the screen timeout —
+  /// and measured on 2026-09-17, it did: after leaving the app with video
+  /// playing, `dumpsys power` showed a SCREEN_BRIGHT_WAKE_LOCK still attributed
+  /// to this app's uid while only the PiP window was on screen. That was a
+  /// regression introduced when this helper replaced the old
+  /// fullscreen-only `WakelockPlus.enable()`, which never covered PiP because it
+  /// only ever ran on entering fullscreen. The partial wakelocks ExoPlayer and
+  /// the audio mixer hold are theirs and are correct — this is only about
+  /// keeping the display lit.
+  ///
   /// Call it *after* the `setState` that changes any input — it reads them.
   void _syncWakelock() {
-    final watchable = _isPlaying && !_audioOnlyMode && !_hasError;
+    final watchable =
+        _isPlaying && !_audioOnlyMode && !_hasError && !_isInPipMode;
     if (watchable) {
       WakelockPlus.enable();
     } else {
@@ -442,8 +470,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// double-tap window before it can rule out a double-tap and settle the
   /// arena on this callback. That delay is the price of the disambiguation
   /// above, not a bug — but it is why the reveal feels a beat behind the
-  /// finger, and any future "make the overlay snappier" work has to start by
-  /// deciding whether the double-tap is worth keeping.
+  /// finger compared with NewPipe, which the owner noticed and reported.
+  ///
+  /// **Settled 2026-09-17: the delay is accepted and the double-tap stays.**
+  /// The two cannot both be had while one surface carries both gestures, and
+  /// the owner chose the double-tap. So this is not an open performance item —
+  /// do not "optimise" it by dropping `onDoubleTap`, splitting the detectors
+  /// (which reintroduces the collision `exo_engine.dart`'s `buildSurface`
+  /// warns about), or shortening the arena timeout. If it is ever revisited,
+  /// it is a product decision to reopen first, not a refactor.
   void _toggleControls() {
     if (_controlsVisible) {
       _hideControls();
@@ -888,6 +923,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             child: ColoredBox(
               color: Colors.black,
               child: Stack(
+              // Belt and braces, and honestly inert as things stand: the
+              // `Center` in unified_video_player is what actually fixes the
+              // alignment, and it makes this Stack fill its parent anyway, so
+              // this line changes nothing today. Adding it alone did NOT fix
+              // fullscreen — measured 0/420 either way. Kept so that removing
+              // the `Center` cannot silently reintroduce a top-start layout,
+              // not because it is doing the work.
+              alignment: Alignment.center,
               children: [
                 _buildBody(),
                 if (!_audioOnlyMode && !_hasError)
@@ -961,6 +1004,42 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                             // control. That bar also renders only when
                             // hasMultipleChannels, so a single-channel playlist
                             // would have lost fullscreen entirely.
+                            // Aspect toggle, fullscreen only. Two states, as
+                            // asked: original (letterboxed, the stream's own
+                            // shape) and fill (stretched to the screen). An
+                            // explicit, visible, tappable control rather than a
+                            // pinch or a double-tap cycle — the standing rule is
+                            // that no gesture may perform an action.
+                            //
+                            // Left of the fullscreen button so that button stays
+                            // put in the corner across both modes, which is the
+                            // reason it is pinned there in the first place.
+                            if (_isFullscreen)
+                              Positioned(
+                                right: 56,
+                                bottom: 8,
+                                child: SafeArea(
+                                  child: IconButton(
+                                    onPressed: () {
+                                      setState(() =>
+                                          _stretchToFill = !_stretchToFill);
+                                      // The user is still interacting; do not
+                                      // let the overlay vanish mid-comparison.
+                                      _showControls();
+                                    },
+                                    icon: Icon(_stretchToFill
+                                        ? Icons.fit_screen
+                                        : Icons.aspect_ratio),
+                                    iconSize: 32,
+                                    color: Colors.white,
+                                    tooltip: _stretchToFill
+                                        ? AppLocalizations.of(context)!
+                                            .originalSize
+                                        : AppLocalizations.of(context)!
+                                            .fillScreen,
+                                  ),
+                                ),
+                              ),
                             Positioned(
                               right: 8,
                               bottom: 8,
@@ -1073,6 +1152,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       channelLogo: _currentChannel.logo,
       autoPlay: true,
       loadingWidget: kIsWeb ? null : _buildChannelLogoWidget(),
+      // Gated on `_isFullscreen` so the windowed player cannot end up stretched
+      // by a stale value, and on `!_isInPipMode` because PiP is a third context
+      // that neither flag describes: `onUserLeaveHint` auto-enters PiP whenever
+      // the app is backgrounded during eligible playback, without touching
+      // `_isFullscreen` or `_stretchToFill`. The PiP window's own aspect is
+      // hardcoded `Rational(16, 9)` in MainActivity, so a stretched surface
+      // there distorts any channel that is not already 16:9. Leaving PiP
+      // restores the user's choice rather than discarding it, which is why this
+      // gates rather than resetting the flag.
+      stretchToFill: _isFullscreen && _stretchToFill && !_isInPipMode,
       onPlayingChanged: (playing) {
         if (mounted && !_isAudioModeActive && _isPlaying != playing) {
           setState(() {

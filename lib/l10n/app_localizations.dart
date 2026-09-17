@@ -112,6 +112,18 @@ abstract class AppLocalizations {
   /// **'Loading...'**
   String get loading;
 
+  /// No description provided for @fillScreen.
+  ///
+  /// In en, this message translates to:
+  /// **'Fill screen'**
+  String get fillScreen;
+
+  /// No description provided for @originalSize.
+  ///
+  /// In en, this message translates to:
+  /// **'Original size'**
+  String get originalSize;
+
   /// No description provided for @welcomeToTvninja.
   ///
   /// In en, this message translates to:
