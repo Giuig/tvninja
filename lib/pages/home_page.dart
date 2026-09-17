@@ -68,36 +68,70 @@ class HomePage extends StatelessWidget {
                       ],
                     ),
                   )
-                : LayoutBuilder(
-                    builder: (context, constraints) {
-                      final crossAxisCount =
-                          _getCrossAxisCount(constraints.maxWidth);
-                      return GridView.builder(
-                        padding: const EdgeInsets.all(4),
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: crossAxisCount,
-                          mainAxisSpacing: 4,
-                          crossAxisSpacing: 4,
-                        ),
-                        itemCount: favorites.length,
-                        itemBuilder: (context, index) {
-                          return _FavoriteCard(channel: favorites[index]);
-                        },
-                      );
+                : GridView.builder(
+                    // 16 matches the "Preferiti" heading's own indent. At 4 the
+                    // cards sat ~4px off the screen edge while the heading above
+                    // them was indented 16, so the grid did not line up with its
+                    // own title.
+                    padding: const EdgeInsets.all(16),
+                    // Max extent, not a fixed count: the tile keeps a constant
+                    // size at every width and the delegate derives how many
+                    // fit. The old breakpoint ladder (12/10/8/5/3 columns) did
+                    // the opposite of what it should — it made tiles *smaller*
+                    // as the screen grew: ~125px cells at 393 logical but only
+                    // ~101px at 1067. More room should buy comfortable tiles,
+                    // not more, tinier ones.
+                    //
+                    // 112, down from 130. This is a favourites shortcut grid,
+                    // and at 130 seven favourites did not fit a phone screen —
+                    // the last row needed a scroll to read its label. 112 puts
+                    // phone portrait on 4 columns (~87px tiles), so seven fit in
+                    // two rows with nothing hidden. Tablet landscape goes from 8
+                    // columns to 10, at ~100px — still flat across widths, which
+                    // is the property the max-extent delegate exists to give;
+                    // the old ladder inverted it (~101px at 1067 vs ~125px at
+                    // 393).
+                    gridDelegate:
+                        const SliverGridDelegateWithMaxCrossAxisExtent(
+                      // 104, retuned after the spacing went to 12. The two are
+                      // not independent: the delegate computes
+                      // `ceil(width / (maxExtent + spacing))`, so at 393 logical
+                      // 112+8 gave four columns by a hair (ceil(361/120) = 4) and
+                      // 112+12 silently dropped to three, which put the seventh
+                      // favourite back under the nav bar. 104+12 holds four, and
+                      // tablet landscape sits at nine ~104px tiles — so tile size
+                      // stays flat across widths, which is the whole point of a
+                      // max-extent delegate.
+                      maxCrossAxisExtent: 104,
+                      // 12, up from 4, and chosen to beat the 8px of padding
+                      // *inside* each card (2 on the card + 6 around the logo).
+                      // Below that inset a tile holds more whitespace than
+                      // separates it from its neighbour, so a row reads as one
+                      // block rather than separate tappable cards — proximity is
+                      // what groups things, so the gap that divides has to win
+                      // against the gap that belongs to a card. 8 was tried on
+                      // the way here and is exactly the tie.
+                      //
+                      // It also lands inside the app's own rhythm rather than
+                      // under it: playlist_page's channel cards carry
+                      // `margin: symmetric(vertical: 4, horizontal: 8)`, so they
+                      // sit 8px apart stacked but 16px apart side by side. A
+                      // grid has neighbours on four sides, so the horizontal
+                      // figure is the one that applies — an earlier revision of
+                      // this comment cited the 8 and picked it, which is the
+                      // list case, not this one.
+                      mainAxisSpacing: 12,
+                      crossAxisSpacing: 12,
+                    ),
+                    itemCount: favorites.length,
+                    itemBuilder: (context, index) {
+                      return _FavoriteCard(channel: favorites[index]);
                     },
                   ),
           ),
         ],
       ),
     );
-  }
-
-  int _getCrossAxisCount(double width) {
-    if (width >= 1200) return 12;
-    if (width >= 900) return 10;
-    if (width >= 600) return 8;
-    if (width >= 400) return 5;
-    return 3;
   }
 }
 
@@ -129,14 +163,16 @@ class _FavoriteCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    // Get available height and calculate appropriate logo size
-    final screenWidth = MediaQuery.of(context).size.width;
-    final crossAxisCount = _getCrossAxisCount(screenWidth);
-    final cellWidth =
-        (screenWidth - 16 - (crossAxisCount - 1) * 8) / crossAxisCount;
-    final logoSize = (cellWidth * 0.35).clamp(20.0, 36.0);
-
-    return Card(
+    // Measure the cell we were actually given rather than re-deriving it from
+    // the screen. The old code recomputed the column count from
+    // MediaQuery screen width and guessed a cell width with hardcoded padding
+    // maths that did not even match the grid's real values — two independent
+    // derivations of the same number, from different inputs. They agreed only
+    // because the grid happened to span the whole screen, and would diverge
+    // the moment anything sits beside it (a NavigationRail, a split view),
+    // leaving the card sized for a cell that does not exist.
+    return LayoutBuilder(builder: (context, constraints) {
+      return Card(
       clipBehavior: Clip.antiAlias,
       margin: EdgeInsets.zero,
       child: InkWell(
@@ -147,50 +183,67 @@ class _FavoriteCard extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              // A square box every logo shares, rather than letting each one
+              // size itself. BoxFit.contain fills whichever axis binds first,
+              // so a wide logo (Rai 1/2/3) hit the width and bled to the card
+              // edge while a round or diamond one (Rete 4, Italia 1) hit the
+              // height and sat in whitespace — identical cards with very
+              // different optical weight. Now shape changes what is inside the
+              // box, not how much room the logo takes.
               Expanded(
-                child: ChannelLogo(
-                  url: channel.logo,
-                  fit: BoxFit.contain,
-                  fallbackBuilder: (_) => _buildDefaultLogo(theme, logoSize),
+                child: Center(
+                  child: AspectRatio(
+                    aspectRatio: 1,
+                    child: Padding(
+                      padding: const EdgeInsets.all(6),
+                      child: ChannelLogo(
+                        url: channel.logo,
+                        fit: BoxFit.contain,
+                        fallbackBuilder: (_) => _buildDefaultLogo(theme),
+                      ),
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: 1),
               Text(channel.name,
+                  // Was fontSize: (logoSize * 0.25).clamp(7.0, 9.0) — a 7-9px
+                  // label, well under any legibility floor, and derived from
+                  // the cell maths removed above. bodySmall (~12) is safe here
+                  // because the logo sits in an Expanded and simply yields
+                  // space as the label grows with the user's font scale.
                   style: theme.textTheme.bodySmall?.copyWith(
                     fontWeight: FontWeight.w500,
-                    fontSize: (logoSize * 0.25).clamp(7.0, 9.0),
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.center),
             ],
           ),
+          ),
         ),
-      ),
-    );
+      );
+    });
   }
 
-  Widget _buildDefaultLogo(ThemeData theme, double logoSize) {
-    return Center(
-      child: Container(
-        width: logoSize,
-        height: logoSize,
+  /// Fills whatever box it is given rather than taking a size.
+  ///
+  /// It used to be drawn at `(cellWidth * 0.35).clamp(20, 36)` while a real
+  /// logo rendered at roughly the full cell — so a channel whose logo failed to
+  /// load showed a ~36px icon beside neighbours three times its size, in the
+  /// same grid. Sharing the caller's square box keeps both states the same size.
+  Widget _buildDefaultLogo(ThemeData theme) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final side = constraints.biggest.shortestSide;
+      return Container(
         decoration: BoxDecoration(
           color: theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(8),
         ),
         child: Icon(Icons.tv,
-            size: logoSize * 0.6, color: theme.colorScheme.onSurfaceVariant),
-      ),
-    );
-  }
-
-  int _getCrossAxisCount(double width) {
-    if (width >= 1200) return 12;
-    if (width >= 900) return 10;
-    if (width >= 600) return 8;
-    if (width >= 400) return 5;
-    return 3;
+            size: side * 0.6, color: theme.colorScheme.onSurfaceVariant),
+      );
+    });
   }
 
   Future<void> _playChannel(BuildContext context) async {

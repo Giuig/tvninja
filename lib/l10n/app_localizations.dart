@@ -112,6 +112,18 @@ abstract class AppLocalizations {
   /// **'Loading...'**
   String get loading;
 
+  /// No description provided for @fillScreen.
+  ///
+  /// In en, this message translates to:
+  /// **'Fill screen'**
+  String get fillScreen;
+
+  /// No description provided for @originalSize.
+  ///
+  /// In en, this message translates to:
+  /// **'Original size'**
+  String get originalSize;
+
   /// No description provided for @welcomeToTvninja.
   ///
   /// In en, this message translates to:
@@ -561,6 +573,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Switch back to video mode'**
   String get switchToVideoDescription;
+
+  /// No description provided for @play.
+  ///
+  /// In en, this message translates to:
+  /// **'Play'**
+  String get play;
+
+  /// No description provided for @pause.
+  ///
+  /// In en, this message translates to:
+  /// **'Pause'**
+  String get pause;
+
+  /// No description provided for @fullscreen.
+  ///
+  /// In en, this message translates to:
+  /// **'Fullscreen'**
+  String get fullscreen;
+
+  /// No description provided for @exitFullscreen.
+  ///
+  /// In en, this message translates to:
+  /// **'Exit fullscreen'**
+  String get exitFullscreen;
 
   /// No description provided for @previousChannel.
   ///

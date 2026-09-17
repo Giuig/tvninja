@@ -40,6 +40,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _isInPipMode = false;
   bool _channelListExpanded = false;
   bool _isFullscreen = false;
+
+  /// Fullscreen-only: fill the screen instead of letterboxing.
+  ///
+  /// Deliberately **not** persisted and reset on leaving fullscreen. Stretching
+  /// distorts the picture, so it is a per-session "I want the bars gone right
+  /// now" choice, not a setting someone should be able to leave on by accident
+  /// and then wonder why everyone looks wide.
+  bool _stretchToFill = false;
   Orientation? _previousOrientation;
 
   late List<Channel> _channels;
@@ -74,7 +82,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _initializePlayer();
     _initializeNativeAudio();
     _listenToPipState();
-    PipService.setFullscreenVideoMode(true);
+    _syncDerivedPlaybackState();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -91,6 +99,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         setState(() {
           _isInPipMode = isInPip;
         });
+        // `_isInPipMode` is an input to the wakelock now, so entering or leaving
+        // PiP has to reconcile it like every other mutation does. Without this
+        // the flag would flip and the lock would keep whatever value it had —
+        // the exact drift the sync helpers exist to prevent.
+        _syncWakelock();
       }
     });
   }
@@ -104,6 +117,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _enterFullscreen() {
+    // Show the overlay across the transition: in fullscreen it is the *only*
+    // chrome, so entering with it hidden would leave a bare video and no
+    // visible way back. The auto-hide timer then clears it as usual.
+    _showControls();
     _previousOrientation = MediaQuery.of(context).orientation;
     setState(() => _isFullscreen = true);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -113,11 +130,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         DeviceOrientation.landscapeRight,
       ]);
     }
-    WakelockPlus.enable();
+    _syncWakelock();
   }
 
   void _exitFullscreen() {
-    setState(() => _isFullscreen = false);
+    _showControls();
+    setState(() {
+      _isFullscreen = false;
+      _stretchToFill = false;
+    });
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     if (!kIsWeb) {
       // Restore previous orientation if known
@@ -133,7 +154,41 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         ]);
       }
     }
-    WakelockPlus.disable();
+    _syncWakelock();
+  }
+
+  /// Holds the screen awake while there is video worth watching on screen.
+  ///
+  /// It used to be `enable()` in [_enterFullscreen] and `disable()` in
+  /// [_exitFullscreen], which meant the **windowed** player never held the lock
+  /// at all — the screen could sleep during ordinary playback, and leaving
+  /// fullscreen dropped the lock rather than handing it back to the windowed
+  /// player. Gated on the wrong condition, exactly like the PiP flag was.
+  ///
+  /// Audio-only deliberately does **not** hold it: the point of that mode is to
+  /// put the phone down. Neither does an error screen, which has nothing to
+  /// watch.
+  ///
+  /// **Nor does picture-in-picture.** A PiP window is something you glance at
+  /// beside another app, not something that should defeat the screen timeout —
+  /// and measured on 2026-09-17, it did: after leaving the app with video
+  /// playing, `dumpsys power` showed a SCREEN_BRIGHT_WAKE_LOCK still attributed
+  /// to this app's uid while only the PiP window was on screen. That was a
+  /// regression introduced when this helper replaced the old
+  /// fullscreen-only `WakelockPlus.enable()`, which never covered PiP because it
+  /// only ever ran on entering fullscreen. The partial wakelocks ExoPlayer and
+  /// the audio mixer hold are theirs and are correct — this is only about
+  /// keeping the display lit.
+  ///
+  /// Call it *after* the `setState` that changes any input — it reads them.
+  void _syncWakelock() {
+    final watchable =
+        _isPlaying && !_audioOnlyMode && !_hasError && !_isInPipMode;
+    if (watchable) {
+      WakelockPlus.enable();
+    } else {
+      WakelockPlus.disable();
+    }
   }
 
   Future<void> _initializeNativeAudio() async {
@@ -158,6 +213,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           setState(() {
             _isPlaying = newPlaying;
           });
+          _syncWakelock();
         }
       }
     });
@@ -202,10 +258,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _controlSubscription?.cancel();
     _bufferingSubscription?.cancel();
     _pipSubscription?.cancel();
+    _controlsHideTimer?.cancel();
     PipService.setFullscreenVideoMode(false);
+    // Unconditionally, and NOT inside the `_isFullscreen` branch below where it
+    // used to sit. That was harmless only while the lock was taken in
+    // `_enterFullscreen` alone — a windowed player never held it, so there was
+    // nothing to release. Now that it is held for any watchable video, leaving
+    // the page while windowed would leak an awake screen for the rest of the
+    // session.
+    WakelockPlus.disable();
     if (_isFullscreen) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      WakelockPlus.disable();
       // Restore previous orientation if we're disposing while still in fullscreen
       if (!kIsWeb && _previousOrientation != null) {
         if (_previousOrientation == Orientation.landscape) {
@@ -243,11 +306,54 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
   }
 
+  /// Tells the native side whether picture-in-picture may be entered.
+  ///
+  /// The flag has **two** owners — audio-only mode and the error state — so it
+  /// is derived here instead of being assigned at each call site. Assigning it
+  /// per-site is what let it drift: `initState` set it unconditionally even
+  /// when starting in audio-only mode, and `_enableAudioMode`'s failure path
+  /// reverted `_audioOnlyMode` without restoring it, disabling PiP for the rest
+  /// of the session.
+  ///
+  /// The predicate is not new. `_buildBody` already gates the fullscreen button
+  /// and the control overlay on exactly `!_audioOnlyMode && !_hasError`; the
+  /// native flag was the one consumer left out of that rule, which is why
+  /// backgrounding a failed channel pinned its error screen into the PiP
+  /// window.
+  ///
+  /// Call it *after* the `setState` that changes either field, never before —
+  /// it reads them.
+  /// Single point where state derived from playback is reconciled.
+  ///
+  /// PiP eligibility and the wakelock read overlapping inputs
+  /// (`_audioOnlyMode`, `_hasError`, and for the wakelock `_isPlaying`), and
+  /// both were previously set at individual call sites. That is what let each of
+  /// them drift out of step with the state it was supposed to follow. Keeping
+  /// one entry point means a new path that changes any of those inputs has one
+  /// thing to remember, not two.
+  ///
+  /// Call it *after* the `setState` that changes any input — both helpers read
+  /// current field values.
+  void _syncDerivedPlaybackState() {
+    _syncPipEligibility();
+    _syncWakelock();
+  }
+
+  void _syncPipEligibility() {
+    PipService.setFullscreenVideoMode(!_audioOnlyMode && !_hasError);
+  }
+
   Future<void> _enableAudioMode() async {
     if (kIsWeb) {
       setState(() {
         _audioOnlyMode = true;
       });
+      // Inert today twice over — this branch is unreachable while the toggle
+      // that calls it is gated on `!kIsWeb`, and `setFullscreenVideoMode` itself
+      // no-ops under `kIsWeb`. Synced anyway: "agrees because it cannot run" is
+      // the same kind of luck this helper exists to remove, and it would start
+      // drifting again the moment either guard moves.
+      _syncDerivedPlaybackState();
       return;
     }
 
@@ -255,13 +361,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       await _playerKey.currentState?.stop();
       // Show the audio placeholder with spinner immediately — before play() is
       // called — so the user sees loading feedback from the very first frame.
-      // Also disable PiP: pressing home in audio-only mode should background
-      // the app normally, not enter picture-in-picture.
-      PipService.setFullscreenVideoMode(false);
       setState(() {
         _audioOnlyMode = true;
         _isBuffering = true;
       });
+      // Pressing home in audio-only mode should background the app normally,
+      // not enter picture-in-picture.
+      _syncDerivedPlaybackState();
 
       final success = await NativeAudioService.play(
         url: _currentChannel.url,
@@ -270,12 +376,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       );
 
       if (success) {
-        setState(() => _isAudioModeActive = true);
+        setState(() {
+          _isAudioModeActive = true;
+          // Re-read the live value rather than waiting for the next event.
+          //
+          // `_isBuffering` was set true above, before this flag existed, and the
+          // buffering listener drops anything arriving while `_isAudioModeActive`
+          // is still false. So when the stream settled *during* the await — the
+          // common case on a fast connection — the "no longer buffering" event
+          // was discarded and nothing later re-sent it, leaving the spinner
+          // turning over audio that was already playing. That is the "sometimes"
+          // in the report: it depends purely on whether the event beat this line.
+          _isBuffering = NativeAudioService.isBuffering;
+        });
       } else {
         setState(() {
           _audioOnlyMode = false;
           _isBuffering = false;
         });
+        _syncDerivedPlaybackState();
         _playerKey.currentState?.play();
       }
     } catch (e) {
@@ -292,8 +411,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _isAudioModeActive = false;
     }
 
-    PipService.setFullscreenVideoMode(true);
-
     try {
       _playerKey.currentState?.play();
     } catch (_) {}
@@ -301,6 +418,73 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     setState(() {
       _audioOnlyMode = false;
     });
+    _syncDerivedPlaybackState();
+  }
+
+  /// Whether the on-video control overlay is showing.
+  ///
+  /// Starts hidden, matching NewPipe (the reference the owner picked): a
+  /// freshly opened channel shows clean video. Only the overlay participates
+  /// — the AppBar and channel bar sit *beside* the video, not over it, so
+  /// hiding them would resize the video and jump the layout on every toggle.
+  bool _controlsVisible = false;
+
+  /// Auto-hide timer. Without it, a tap to check the controls leaves them
+  /// parked over the video for the rest of the channel.
+  Timer? _controlsHideTimer;
+
+  static const Duration _controlsHideAfter = Duration(seconds: 4);
+
+  /// Reveals the overlay and (re)arms the auto-hide countdown.
+  void _showControls() {
+    _controlsHideTimer?.cancel();
+    _controlsHideTimer = null;
+    // Bail before arming a new timer, not just before setState. Every caller
+    // today is a live UI callback so this cannot fire unmounted — but the
+    // earlier shape created the timer unconditionally, so wiring this to any
+    // async listener (as several others in this file are) would have started
+    // a countdown on a disposed State. Narrowed now rather than left as a trap.
+    if (!mounted) return;
+    setState(() => _controlsVisible = true);
+    _controlsHideTimer = Timer(_controlsHideAfter, () {
+      if (mounted) setState(() => _controlsVisible = false);
+    });
+  }
+
+  void _hideControls() {
+    _controlsHideTimer?.cancel();
+    _controlsHideTimer = null;
+    if (mounted) setState(() => _controlsVisible = false);
+  }
+
+  /// Bound to `onTap` on the *same* `GestureDetector` as `onDoubleTap`, which
+  /// is what lets Flutter disambiguate the two: a genuine double-tap resolves
+  /// to `onDoubleTap` alone and never fires this first. Two separate detectors
+  /// in different layers would not — that collision is what
+  /// `exo_engine.dart`'s `buildSurface` comment warns about.
+  ///
+  /// Allowed under the owner's gesture rule because it performs no action of
+  /// its own: it only surfaces buttons that are already real and tappable.
+  ///
+  /// Costs ~300ms of latency on every single tap: Flutter must wait out the
+  /// double-tap window before it can rule out a double-tap and settle the
+  /// arena on this callback. That delay is the price of the disambiguation
+  /// above, not a bug — but it is why the reveal feels a beat behind the
+  /// finger compared with NewPipe, which the owner noticed and reported.
+  ///
+  /// **Settled 2026-09-17: the delay is accepted and the double-tap stays.**
+  /// The two cannot both be had while one surface carries both gestures, and
+  /// the owner chose the double-tap. So this is not an open performance item —
+  /// do not "optimise" it by dropping `onDoubleTap`, splitting the detectors
+  /// (which reintroduces the collision `exo_engine.dart`'s `buildSurface`
+  /// warns about), or shortening the arena timeout. If it is ever revisited,
+  /// it is a product decision to reopen first, not a refactor.
+  void _toggleControls() {
+    if (_controlsVisible) {
+      _hideControls();
+    } else {
+      _showControls();
+    }
   }
 
   void _togglePlayPause() {
@@ -327,6 +511,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _hasError = false;
       _errorMessage = '';
     });
+    _syncDerivedPlaybackState();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
@@ -339,6 +524,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _hasError = false;
       _errorMessage = '';
     });
+    _syncDerivedPlaybackState();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
@@ -355,6 +541,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _hasError = false;
       _errorMessage = '';
     });
+    _syncDerivedPlaybackState();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
@@ -699,50 +886,186 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 ],
               ),
               actions: [
+                // Audio-only lives here, not in the on-video overlay:
+                // tapping it makes the video disappear, so a control hosted on
+                // the video would vanish along with the thing it just turned
+                // off, and the way back would have to live somewhere else. As
+                // an AppBar icon it is the same button in the same place in
+                // both directions — the AppBar stays visible in audio mode.
+                //
+                // Promoted out of the overflow menu, which held this as its
+                // only entry: two taps for one action, on the app's most
+                // distinctive feature. The menu is removed rather than left
+                // wrapping nothing — re-add it once there is more than one
+                // thing to put in it (the sleep timer).
                 if (hasMenuItems)
-                  PopupMenuButton<String>(
-                    icon: const Icon(Icons.more_vert, color: Colors.white),
-                    onSelected: (value) {
-                      if (value == 'audio') {
-                        _toggleAudioOnlyMode();
-                      }
-                    },
-                    itemBuilder: (context) => [
-                      PopupMenuItem(
-                        value: 'audio',
-                        child: Row(
-                          children: [
-                            Icon(
-                                _audioOnlyMode
-                                    ? Icons.videocam
-                                    : Icons.headphones,
-                                size: 20),
-                            const SizedBox(width: 12),
-                            Text(_audioOnlyMode
-                                ? AppLocalizations.of(context)!.switchToVideo
-                                : AppLocalizations.of(context)!.audioOnlyMode),
-                          ],
-                        ),
-                      ),
-                    ],
+                  IconButton(
+                    onPressed: _toggleAudioOnlyMode,
+                    icon: Icon(
+                      _audioOnlyMode ? Icons.videocam : Icons.headphones,
+                      color: Colors.white,
+                    ),
+                    tooltip: _audioOnlyMode
+                        ? AppLocalizations.of(context)!.switchToVideo
+                        : AppLocalizations.of(context)!.audioOnlyMode,
                   ),
               ],
             ),
       body: Column(
         children: [
           Expanded(
-            child: Stack(
+            // Black behind everything in the player area. Without it the
+            // letterbox bars around a centred video showed the Scaffold's own
+            // background, so the control scrim — which covers this whole box —
+            // visibly extended past the picture onto page-coloured margins.
+            // Black is what every other player does with that slack, and it
+            // makes the scrim read as belonging to the video.
+            child: ColoredBox(
+              color: Colors.black,
+              child: Stack(
+              // Belt and braces, and honestly inert as things stand: the
+              // `Center` in unified_video_player is what actually fixes the
+              // alignment, and it makes this Stack fill its parent anyway, so
+              // this line changes nothing today. Adding it alone did NOT fix
+              // fullscreen — measured 0/420 either way. Kept so that removing
+              // the `Center` cannot silently reintroduce a top-start layout,
+              // not because it is doing the work.
+              alignment: Alignment.center,
               children: [
                 _buildBody(),
                 if (!_audioOnlyMode && !_hasError)
                   Positioned.fill(
                     child: GestureDetector(
                       behavior: HitTestBehavior.translucent,
+                      // Same detector for both, deliberately: Flutter then
+                      // disambiguates them, so a genuine double-tap resolves to
+                      // onDoubleTap alone instead of firing onTap first. Two
+                      // detectors in separate layers would collide — see the
+                      // note in exo_engine.dart's buildSurface.
+                      onTap: _toggleControls,
                       onDoubleTap: _toggleFullscreen,
                       child: const SizedBox.expand(),
                     ),
                   ),
+                // On-video control overlay. Sits ABOVE the gesture layer so its
+                // buttons win the hit test, but the scrim inside is wrapped in
+                // its own IgnorePointer so a tap on empty space still falls
+                // through to the detector and hides the overlay again.
+                //
+                // Gated on `!_isInPipMode` so it cannot repeat the PiP leak
+                // that moving the fullscreen button out of
+                // `ExoEngine.buildSurface` fixed — that button was invisible to
+                // PiP state and painted itself over the thumbnail.
+                if (!_isInPipMode && !_audioOnlyMode && !_hasError)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      ignoring: !_controlsVisible,
+                      child: AnimatedOpacity(
+                        opacity: _controlsVisible ? 1 : 0,
+                        duration: const Duration(milliseconds: 180),
+                        child: Stack(
+                          children: [
+                            const IgnorePointer(
+                              child: ColoredBox(
+                                color: Color(0x59000000),
+                                child: SizedBox.expand(),
+                              ),
+                            ),
+                            Center(
+                              child: IconButton(
+                                onPressed: () {
+                                  _togglePlayPause();
+                                  // Re-arm the countdown: the user is still
+                                  // interacting, so the overlay should not
+                                  // vanish mid-use.
+                                  _showControls();
+                                },
+                                icon: Icon(_isPlaying
+                                    ? Icons.pause_circle_filled
+                                    : Icons.play_circle_filled),
+                                iconSize: 64,
+                                color: Colors.white,
+                                tooltip: _isPlaying
+                                    ? AppLocalizations.of(context)!.pause
+                                    : AppLocalizations.of(context)!.play,
+                              ),
+                            ),
+                            // Fullscreen toggle, bottom-right in *both*
+                            // directions (owner request): the control does not
+                            // move under the thumb when the mode changes, so
+                            // entering and leaving fullscreen is the same tap
+                            // target twice.
+                            //
+                            // It belongs here rather than in the AppBar or the
+                            // channel bar because in fullscreen the AppBar is
+                            // null and that bar is skipped — either would leave
+                            // the double-tap as the only way back out, and a
+                            // gesture must never be the sole route to a
+                            // control. That bar also renders only when
+                            // hasMultipleChannels, so a single-channel playlist
+                            // would have lost fullscreen entirely.
+                            // Aspect toggle, fullscreen only. Two states, as
+                            // asked: original (letterboxed, the stream's own
+                            // shape) and fill (stretched to the screen). An
+                            // explicit, visible, tappable control rather than a
+                            // pinch or a double-tap cycle — the standing rule is
+                            // that no gesture may perform an action.
+                            //
+                            // Left of the fullscreen button so that button stays
+                            // put in the corner across both modes, which is the
+                            // reason it is pinned there in the first place.
+                            if (_isFullscreen)
+                              Positioned(
+                                right: 56,
+                                bottom: 8,
+                                child: SafeArea(
+                                  child: IconButton(
+                                    onPressed: () {
+                                      setState(() =>
+                                          _stretchToFill = !_stretchToFill);
+                                      // The user is still interacting; do not
+                                      // let the overlay vanish mid-comparison.
+                                      _showControls();
+                                    },
+                                    icon: Icon(_stretchToFill
+                                        ? Icons.fit_screen
+                                        : Icons.aspect_ratio),
+                                    iconSize: 32,
+                                    color: Colors.white,
+                                    tooltip: _stretchToFill
+                                        ? AppLocalizations.of(context)!
+                                            .originalSize
+                                        : AppLocalizations.of(context)!
+                                            .fillScreen,
+                                  ),
+                                ),
+                              ),
+                            Positioned(
+                              right: 8,
+                              bottom: 8,
+                              child: SafeArea(
+                                child: IconButton(
+                                  onPressed: _toggleFullscreen,
+                                  icon: Icon(_isFullscreen
+                                      ? Icons.fullscreen_exit
+                                      : Icons.fullscreen),
+                                  iconSize: 32,
+                                  color: Colors.white,
+                                  tooltip: _isFullscreen
+                                      ? AppLocalizations.of(context)!
+                                          .exitFullscreen
+                                      : AppLocalizations.of(context)!
+                                          .fullscreen,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
               ],
+            ),
             ),
           ),
           if (hasMultipleChannels && !_isInPipMode && !_isFullscreen) ...[
@@ -824,26 +1147,54 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final videoPlayer = UnifiedVideoPlayer(
       key: _playerKey,
       url: _currentChannel.url,
+      userAgent: _currentChannel.userAgent,
       channelName: _currentChannel.name,
       channelLogo: _currentChannel.logo,
       autoPlay: true,
       loadingWidget: kIsWeb ? null : _buildChannelLogoWidget(),
+      // Gated on `_isFullscreen` so the windowed player cannot end up stretched
+      // by a stale value, and on `!_isInPipMode` because PiP is a third context
+      // that neither flag describes: `onUserLeaveHint` auto-enters PiP whenever
+      // the app is backgrounded during eligible playback, without touching
+      // `_isFullscreen` or `_stretchToFill`. The PiP window's own aspect is
+      // hardcoded `Rational(16, 9)` in MainActivity, so a stretched surface
+      // there distorts any channel that is not already 16:9. Leaving PiP
+      // restores the user's choice rather than discarding it, which is why this
+      // gates rather than resetting the flag.
+      stretchToFill: _isFullscreen && _stretchToFill && !_isInPipMode,
       onPlayingChanged: (playing) {
         if (mounted && !_isAudioModeActive && _isPlaying != playing) {
           setState(() {
             _isPlaying = playing;
           });
+          _syncWakelock();
         }
       },
       onError: (error) {
-        if (mounted) {
-          setState(() {
-            _hasError = true;
-            _errorMessage = error ?? AppLocalizations.of(context)!.unknownError;
-          });
-        }
+        if (!mounted) return;
+        // Leave fullscreen before showing the error. While `_isFullscreen` the
+        // AppBar is null, and `_buildError()` replaces the video entirely —
+        // taking the overlay fullscreen button and the double-tap detector
+        // with it, since both are gated on `!_hasError`. Without this, an
+        // error raised while fullscreen leaves *no* on-screen route out of
+        // fullscreen at all: not a button, not even the gesture. There is no
+        // `PopScope` either, so Android back would pop the whole page rather
+        // than return to windowed playback.
+        //
+        // Exiting is the right fix rather than un-gating the button: an error
+        // screen has no video to watch, so immersive landscape is wrong for it
+        // regardless. This predates the fullscreen-ownership change but that
+        // change is what made guaranteed escapability the rule, so it is fixed
+        // here rather than left as a known gap.
+        if (_isFullscreen) _exitFullscreen();
+        setState(() {
+          _hasError = true;
+          _errorMessage = error ?? AppLocalizations.of(context)!.unknownError;
+        });
+        // The reported bug: without this, backgrounding here pins the error
+        // screen into the PiP window, where its layout also overflows.
+        _syncDerivedPlaybackState();
       },
-      onToggleFullscreen: _toggleFullscreen,
     );
 
     return videoPlayer;
@@ -857,6 +1208,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return url;
   }
 
+  // COUPLING NOTE: this string-matches the *output* of
+  // `unified_video_player.dart`'s `_friendlyError()` and `_surfaceError()`.
+  //
+  // There is no `errorCodeName` matching and never was — an earlier version
+  // of this note claimed `_friendlyError()` classified "ExoPlayer/Media3
+  // `errorCodeName`-shaped errors", which was wrong and contradicted that
+  // method's own comment. Media3 surfaces every HTTP failure as the literal
+  // string "Source error" with no code in it, so on Android the specific
+  // message comes from `_surfaceError()`'s `StreamDiagnostics` probe instead,
+  // which re-requests the URL and reads the real status.
+  //
+  // Both of those produce the same fixed set of message strings on purpose,
+  // so this icon mapping needs no engine-aware branch. If either one's
+  // wording changes, the `contains()` checks below must change to match —
+  // see the matching notes there.
   IconData _errorIcon() {
     final msg = _errorMessage.toLowerCase();
     if (msg.contains('timed out') || msg.contains('not responding'))
@@ -899,7 +1265,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   _hasError = false;
                   _errorMessage = '';
                 });
-                _initializePlayer();
+                _syncDerivedPlaybackState();
+                // `_buildBody()` returns `_buildError()` while `_hasError` is
+                // set, so the player is NOT in the tree here and
+                // `currentState` is null — this call is a no-op today. What
+                // actually restarts playback is the `setState` above: clearing
+                // `_hasError` remounts `UnifiedVideoPlayer`, whose `initState`
+                // reloads from scratch.
+                //
+                // The call is kept rather than deleted because it is the live
+                // path the moment anyone keeps the player mounted behind an
+                // error overlay instead of replacing it — at which point the
+                // remount stops happening and this becomes the only thing that
+                // reloads. Deleting it would make that future change silently
+                // break Retry.
+                _playerKey.currentState?.retry();
               },
               icon: const Icon(Icons.refresh),
               label: Text(AppLocalizations.of(context)!.retry),

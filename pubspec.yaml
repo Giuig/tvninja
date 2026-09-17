@@ -25,9 +25,18 @@ dependencies:
   http: ^1.2.0
   wakelock_plus: ^1.5.1
 
-  # Background audio - using native Kotlin for best performance
-  # just_audio removed - using native ExoPlayer via Platform Channels
-  
+  # Android foreground playback (Phase 3): official video_player, backed by
+  # video_player_android's Media3/ExoPlayer implementation. Android only —
+  # media_kit/mpv remains the engine for iOS/web/desktop (see
+  # lib/services/video/engines/). Not better_player, not a custom platform
+  # channel (see PLAN.md decision 1).
+  video_player: ^2.9.2
+  video_player_android: ^2.5.2
+
+  # Background audio - just_audio removed; native_audio_service.dart runs its
+  # own media_kit/mpv Player() instance (not ExoPlayer/Media3 - the Kotlin
+  # side only uses androidx.media:media for the MediaSession/notification).
+
   # Database - cross-platform (web + android)
   hive: ^2.2.3
   hive_flutter: ^1.1.0

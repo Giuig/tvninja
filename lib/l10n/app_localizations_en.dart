@@ -12,6 +12,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get loading => 'Loading...';
 
   @override
+  String get fillScreen => 'Fill screen';
+
+  @override
+  String get originalSize => 'Original size';
+
+  @override
   String get welcomeToTvninja => 'Welcome to TV Ninja!';
 
   @override
@@ -260,6 +266,18 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get switchToVideoDescription => 'Switch back to video mode';
+
+  @override
+  String get play => 'Play';
+
+  @override
+  String get pause => 'Pause';
+
+  @override
+  String get fullscreen => 'Fullscreen';
+
+  @override
+  String get exitFullscreen => 'Exit fullscreen';
 
   @override
   String get previousChannel => 'Previous channel';
