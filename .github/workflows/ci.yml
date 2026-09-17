@@ -1,0 +1,52 @@
+name: CI
+
+# Nothing ran on a pull request before this. The only workflows here are the
+# tag/push release pipelines (build.yml, version_bump.yml, web-deploy.yml), so
+# until now the sole gate on a regression reaching main was a human reading the
+# diff — including for the ExoPlayer migration, the largest change this app has
+# had.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - staging
+
+jobs:
+  analyze-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # Latest stable rather than a pinned version: this app tracks a shared
+          # package and a fast-moving plugin set, so it should fail here when a
+          # new SDK deprecates something rather than at release time. Pin
+          # `flutter-version` if a stable release ever breaks the build for
+          # reasons unrelated to a PR.
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      # Scoped to `lib test`, and infos are not fatal. There are 33 pre-existing
+      # infos (mostly constant_identifier_names, depend_on_referenced_packages
+      # and curly_braces_in_flow_control_structures); failing on those would make
+      # the check red on day one and teach everyone to ignore it. Errors and
+      # warnings ARE fatal, and the repo is at zero of both — the five warnings
+      # that existed were fixed in the same commit that added this file, so this
+      # gate starts green and any new warning breaks the build.
+      - run: flutter analyze lib test --no-fatal-infos
+
+      - run: flutter test
+
+      # The web target is the only one that compiles lib/services/video/
+      # web_video_player_web.dart, and tvninja actually ships a web build via
+      # web-deploy.yml. Without this, web-only breakage is invisible until a
+      # release.
+      - run: flutter build web
+
+# No `dart format --set-exit-if-changed` gate: the repo is not formatter-clean
+# and never has been, so it would fail every PR from the start. That wants its
+# own formatting pass, not a reformat smuggled into a CI commit.

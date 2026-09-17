@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:js_interop';
 import 'dart:ui_web' as ui_web;
 import 'package:flutter/foundation.dart';
@@ -36,7 +35,6 @@ class WebVideoPlayerWidget extends StatefulWidget {
 }
 
 class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
-  bool _isInitialized = false;
   bool _hasError = false;
   bool _isPlaying = false;
   String _errorMessage = '';
@@ -67,7 +65,6 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
   void _cleanup() {
     _videoElement?.pause();
     _videoElement = null;
-    _isInitialized = false;
     _hasError = false;
     _isPlaying = false;
     _errorMessage = '';
@@ -120,10 +117,6 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
     // Create JSON array of URLs for JavaScript
     final urlsJson = urlsToTry.map((u) => '"${_escapeJs(u)}"').join(',');
     debugPrint('[WebVideo] Will try ${urlsToTry.length} URLs: $urlsToTry');
-    final escapedName = _escapeJs(widget.channelName);
-    final escapedLogo =
-        widget.channelLogo != null ? _escapeJs(widget.channelLogo!) : '';
-
     // Create HTML with direct video element (not iframe)
     final htmlContent = '''
 <!DOCTYPE html>
@@ -436,9 +429,11 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
       _handleMessage(message);
     });
 
-    setState(() {
-      _isInitialized = true;
-    });
+    // The rebuild is the entire point here: `_playerId` was assigned above and
+    // `build()` needs it to mount the HtmlElementView. There is no flag to set —
+    // `_isInitialized` used to be assigned here and in `_cleanup()` but was never
+    // read by `build()`, so it was write-only state pretending to be meaningful.
+    setState(() {});
   }
 
   void _handleMessage(String message) {

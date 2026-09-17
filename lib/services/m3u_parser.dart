@@ -126,7 +126,7 @@ class M3UParser {
         currentLine = lines[i].trimRight();
       }
 
-      if (infoMatch == null || currentLine!.isEmpty || currentLine.startsWith('#')) {
+      if (infoMatch == null || currentLine.isEmpty || currentLine.startsWith('#')) {
         // Bug fix (found investigating the live-tested RAI/ExoPlayer 403 —
         // see TASKS.md "Bug 2"): a malformed/skipped block must reset the
         // same per-block state the successful path resets below, or its
