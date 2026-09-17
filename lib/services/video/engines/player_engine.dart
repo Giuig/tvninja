@@ -86,7 +86,10 @@ abstract class PlayerEngine {
   /// calls this fresh on every `build()`; engines whose underlying player
   /// object can be replaced out from under it (`ExoEngine`, on [switchTo])
   /// rely on that rebuild to pick up the new instance.
-  Widget buildSurface(BuildContext context);
+  /// [stretch] fills the box, ignoring the stream's aspect ratio. Off by
+  /// default; `player_page` only ever passes true in fullscreen, where the
+  /// user has asked for it explicitly.
+  Widget buildSurface(BuildContext context, {bool stretch = false});
 
   Future<void> dispose();
 }

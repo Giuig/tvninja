@@ -318,7 +318,7 @@ class ExoEngine extends PlayerEngine {
   Duration get position => _controller?.value.position ?? Duration.zero;
 
   @override
-  Widget buildSurface(BuildContext context) {
+  Widget buildSurface(BuildContext context, {bool stretch = false}) {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) {
       // Between switchTo()'s dispose and the new controller's initialize()
@@ -356,6 +356,12 @@ class ExoEngine extends PlayerEngine {
     // exit button, both of which already gate on `_isInPipMode`. Do not
     // reintroduce chrome at this layer — an engine cannot see the widget
     // state that decides whether chrome should be visible.
+    // `VideoPlayer` is a `Texture`, which fills whatever constraints it is
+    // given — the `AspectRatio` around it is the only thing preserving the
+    // stream's shape. So stretching is simply not wrapping it.
+    if (stretch) {
+      return VideoPlayer(controller);
+    }
     return AspectRatio(
       aspectRatio: controller.value.aspectRatio,
       child: VideoPlayer(controller),

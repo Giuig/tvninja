@@ -40,6 +40,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _isInPipMode = false;
   bool _channelListExpanded = false;
   bool _isFullscreen = false;
+
+  /// Fullscreen-only: fill the screen instead of letterboxing.
+  ///
+  /// Deliberately **not** persisted and reset on leaving fullscreen. Stretching
+  /// distorts the picture, so it is a per-session "I want the bars gone right
+  /// now" choice, not a setting someone should be able to leave on by accident
+  /// and then wonder why everyone looks wide.
+  bool _stretchToFill = false;
   Orientation? _previousOrientation;
 
   late List<Channel> _channels;
@@ -122,7 +130,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _exitFullscreen() {
     _showControls();
-    setState(() => _isFullscreen = false);
+    setState(() {
+      _isFullscreen = false;
+      _stretchToFill = false;
+    });
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     if (!kIsWeb) {
       // Restore previous orientation if known
@@ -888,6 +899,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             child: ColoredBox(
               color: Colors.black,
               child: Stack(
+              // Centring the *inner* Stack in unified_video_player is not
+              // enough, and measurement proved it: that Stack is
+              // `StackFit.loose`, so it shrinks to its `AspectRatio` child and
+              // centring within itself is a no-op. This outer Stack is the one
+              // that positions that box inside the full player area, and it
+              // defaulted to `AlignmentDirectional.topStart`. Measured at
+              // 2340x1080 in fullscreen: 0px of letterbox on the left and 420px
+              // on the right before this line, 210/210 after.
+              alignment: Alignment.center,
               children: [
                 _buildBody(),
                 if (!_audioOnlyMode && !_hasError)
@@ -961,6 +981,42 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                             // control. That bar also renders only when
                             // hasMultipleChannels, so a single-channel playlist
                             // would have lost fullscreen entirely.
+                            // Aspect toggle, fullscreen only. Two states, as
+                            // asked: original (letterboxed, the stream's own
+                            // shape) and fill (stretched to the screen). An
+                            // explicit, visible, tappable control rather than a
+                            // pinch or a double-tap cycle — the standing rule is
+                            // that no gesture may perform an action.
+                            //
+                            // Left of the fullscreen button so that button stays
+                            // put in the corner across both modes, which is the
+                            // reason it is pinned there in the first place.
+                            if (_isFullscreen)
+                              Positioned(
+                                right: 56,
+                                bottom: 8,
+                                child: SafeArea(
+                                  child: IconButton(
+                                    onPressed: () {
+                                      setState(() =>
+                                          _stretchToFill = !_stretchToFill);
+                                      // The user is still interacting; do not
+                                      // let the overlay vanish mid-comparison.
+                                      _showControls();
+                                    },
+                                    icon: Icon(_stretchToFill
+                                        ? Icons.fit_screen
+                                        : Icons.aspect_ratio),
+                                    iconSize: 32,
+                                    color: Colors.white,
+                                    tooltip: _stretchToFill
+                                        ? AppLocalizations.of(context)!
+                                            .originalSize
+                                        : AppLocalizations.of(context)!
+                                            .fillScreen,
+                                  ),
+                                ),
+                              ),
                             Positioned(
                               right: 8,
                               bottom: 8,
@@ -1073,6 +1129,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       channelLogo: _currentChannel.logo,
       autoPlay: true,
       loadingWidget: kIsWeb ? null : _buildChannelLogoWidget(),
+      // Gated on `_isFullscreen` as well as the flag, so the windowed player
+      // cannot end up stretched by a stale value.
+      stretchToFill: _isFullscreen && _stretchToFill,
       onPlayingChanged: (playing) {
         if (mounted && !_isAudioModeActive && _isPlaying != playing) {
           setState(() {
