@@ -99,6 +99,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         setState(() {
           _isInPipMode = isInPip;
         });
+        // `_isInPipMode` is an input to the wakelock now, so entering or leaving
+        // PiP has to reconcile it like every other mutation does. Without this
+        // the flag would flip and the lock would keep whatever value it had —
+        // the exact drift the sync helpers exist to prevent.
+        _syncWakelock();
       }
     });
   }
@@ -164,9 +169,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// put the phone down. Neither does an error screen, which has nothing to
   /// watch.
   ///
+  /// **Nor does picture-in-picture.** A PiP window is something you glance at
+  /// beside another app, not something that should defeat the screen timeout —
+  /// and measured on 2026-09-17, it did: after leaving the app with video
+  /// playing, `dumpsys power` showed a SCREEN_BRIGHT_WAKE_LOCK still attributed
+  /// to this app's uid while only the PiP window was on screen. That was a
+  /// regression introduced when this helper replaced the old
+  /// fullscreen-only `WakelockPlus.enable()`, which never covered PiP because it
+  /// only ever ran on entering fullscreen. The partial wakelocks ExoPlayer and
+  /// the audio mixer hold are theirs and are correct — this is only about
+  /// keeping the display lit.
+  ///
   /// Call it *after* the `setState` that changes any input — it reads them.
   void _syncWakelock() {
-    final watchable = _isPlaying && !_audioOnlyMode && !_hasError;
+    final watchable =
+        _isPlaying && !_audioOnlyMode && !_hasError && !_isInPipMode;
     if (watchable) {
       WakelockPlus.enable();
     } else {
