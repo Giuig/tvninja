@@ -453,8 +453,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// double-tap window before it can rule out a double-tap and settle the
   /// arena on this callback. That delay is the price of the disambiguation
   /// above, not a bug — but it is why the reveal feels a beat behind the
-  /// finger, and any future "make the overlay snappier" work has to start by
-  /// deciding whether the double-tap is worth keeping.
+  /// finger compared with NewPipe, which the owner noticed and reported.
+  ///
+  /// **Settled 2026-09-17: the delay is accepted and the double-tap stays.**
+  /// The two cannot both be had while one surface carries both gestures, and
+  /// the owner chose the double-tap. So this is not an open performance item —
+  /// do not "optimise" it by dropping `onDoubleTap`, splitting the detectors
+  /// (which reintroduces the collision `exo_engine.dart`'s `buildSurface`
+  /// warns about), or shortening the arena timeout. If it is ever revisited,
+  /// it is a product decision to reopen first, not a refactor.
   void _toggleControls() {
     if (_controlsVisible) {
       _hideControls();
