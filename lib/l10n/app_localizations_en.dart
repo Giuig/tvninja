@@ -12,6 +12,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get loading => 'Loading...';
 
   @override
+  String get fillScreen => 'Fill screen';
+
+  @override
+  String get originalSize => 'Original size';
+
+  @override
   String get welcomeToTvninja => 'Welcome to TV Ninja!';
 
   @override

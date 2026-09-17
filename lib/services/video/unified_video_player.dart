@@ -22,6 +22,12 @@ class UnifiedVideoPlayer extends StatefulWidget {
   final Widget? loadingWidget;
   final Widget? errorWidget;
 
+  /// Fill the box, ignoring the stream's aspect ratio.
+  ///
+  /// The caller decides when this is allowed — `player_page` only passes true
+  /// while fullscreen, so windowed playback always keeps the original shape.
+  final bool stretchToFill;
+
   const UnifiedVideoPlayer({
     super.key,
     required this.url,
@@ -35,6 +41,7 @@ class UnifiedVideoPlayer extends StatefulWidget {
     this.onCompleted,
     this.loadingWidget,
     this.errorWidget,
+    this.stretchToFill = false,
   });
 
   @override
@@ -639,9 +646,25 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       return widget.loadingWidget ?? _buildDefaultLoading();
     }
 
+    // `alignment` matters: `buildSurface` returns an `AspectRatio`, and a
+    // non-positioned `Stack` child is aligned to `AlignmentDirectional.topStart`
+    // by default. So whenever the video's aspect ratio did not match the box —
+    // which is every letterboxed case, including most fullscreen playback — the
+    // picture sat against the top-left corner with all of the slack below and to
+    // the right of it, instead of being centred. Reported as "fullscreen on
+    // device shows stream not centered".
     return Stack(
+      alignment: Alignment.center,
       children: [
-        _engine!.buildSurface(context),
+        // `Center`, not just the Stack's `alignment`. A `StackFit.loose` Stack
+        // shrink-wraps to its largest child, so aligning within it can be a
+        // no-op — measured: fullscreen at 2340x1080 stayed hard left (0px of
+        // letterbox one side, 420 the other) with only the alignment set.
+        // `Center` expands to the constraints it is given and positions the
+        // surface inside that, which holds however the Stack sizes itself.
+        Center(
+          child: _engine!.buildSurface(context, stretch: widget.stretchToFill),
+        ),
         if (_isBuffering && widget.loadingWidget != null) widget.loadingWidget!,
       ],
     );

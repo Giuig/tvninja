@@ -1,6 +1,8 @@
 {
   "@@locale": "en",
   "loading": "Loading...",
+  "fillScreen": "Fill screen",
+  "originalSize": "Original size",
   "welcomeToTvninja": "Welcome to TV Ninja!",
   "watchYourFavoriteChannels": "Watch your favorite TV channels",
   "playlists": "Playlists",
