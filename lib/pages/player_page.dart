@@ -899,14 +899,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             child: ColoredBox(
               color: Colors.black,
               child: Stack(
-              // Centring the *inner* Stack in unified_video_player is not
-              // enough, and measurement proved it: that Stack is
-              // `StackFit.loose`, so it shrinks to its `AspectRatio` child and
-              // centring within itself is a no-op. This outer Stack is the one
-              // that positions that box inside the full player area, and it
-              // defaulted to `AlignmentDirectional.topStart`. Measured at
-              // 2340x1080 in fullscreen: 0px of letterbox on the left and 420px
-              // on the right before this line, 210/210 after.
+              // Belt and braces, and honestly inert as things stand: the
+              // `Center` in unified_video_player is what actually fixes the
+              // alignment, and it makes this Stack fill its parent anyway, so
+              // this line changes nothing today. Adding it alone did NOT fix
+              // fullscreen — measured 0/420 either way. Kept so that removing
+              // the `Center` cannot silently reintroduce a top-start layout,
+              // not because it is doing the work.
               alignment: Alignment.center,
               children: [
                 _buildBody(),
@@ -1129,9 +1128,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       channelLogo: _currentChannel.logo,
       autoPlay: true,
       loadingWidget: kIsWeb ? null : _buildChannelLogoWidget(),
-      // Gated on `_isFullscreen` as well as the flag, so the windowed player
-      // cannot end up stretched by a stale value.
-      stretchToFill: _isFullscreen && _stretchToFill,
+      // Gated on `_isFullscreen` so the windowed player cannot end up stretched
+      // by a stale value, and on `!_isInPipMode` because PiP is a third context
+      // that neither flag describes: `onUserLeaveHint` auto-enters PiP whenever
+      // the app is backgrounded during eligible playback, without touching
+      // `_isFullscreen` or `_stretchToFill`. The PiP window's own aspect is
+      // hardcoded `Rational(16, 9)` in MainActivity, so a stretched surface
+      // there distorts any channel that is not already 16:9. Leaving PiP
+      // restores the user's choice rather than discarding it, which is why this
+      // gates rather than resetting the flag.
+      stretchToFill: _isFullscreen && _stretchToFill && !_isInPipMode,
       onPlayingChanged: (playing) {
         if (mounted && !_isAudioModeActive && _isPlaying != playing) {
           setState(() {
