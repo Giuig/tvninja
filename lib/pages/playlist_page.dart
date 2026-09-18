@@ -63,7 +63,8 @@ class _PlaylistPageState extends State<PlaylistPage> {
 
     if (_selectedGroup != null && _selectedGroup!.isNotEmpty) {
       filtered = filtered
-          .where((c) => c.group?.toLowerCase() == _selectedGroup!.toLowerCase())
+          .where((c) =>
+              c.displayGroup?.toLowerCase() == _selectedGroup!.toLowerCase())
           .toList();
     }
 
@@ -78,8 +79,8 @@ class _PlaylistPageState extends State<PlaylistPage> {
 
   Set<String> _getGroups(List<Channel> channels) {
     return channels
-        .where((c) => c.group != null && c.group!.isNotEmpty)
-        .map((c) => c.group!)
+        .where((c) => c.displayGroup != null)
+        .map((c) => c.displayGroup!)
         .toSet();
   }
 
@@ -459,9 +460,18 @@ class _PlaylistPageState extends State<PlaylistPage> {
                               context,
                               MaterialPageRoute(
                                 builder: (_) => PlayerPage(
+                                  // The whole playlist, not `filteredChannels`.
+                                  // Search and the group filter are a way to
+                                  // *find* a channel; once you are watching, the
+                                  // numbering should be the channel's real
+                                  // position and zapping should not stop at the
+                                  // edge of a filter you have already left
+                                  // behind. It also keeps the quick list's row
+                                  // numbers and the n/total chip agreeing with
+                                  // each other and with the playlist.
                                   channel: channel,
-                                  channels: filteredChannels,
-                                  initialIndex: filteredChannels.indexOf(channel),
+                                  channels: playlist.channels,
+                                  initialIndex: playlist.channels.indexOf(channel),
                                   initialAudioOnly: shouldStartInAudioOnly,
                                 ),
                               ),
@@ -503,8 +513,8 @@ class _PlaylistPageState extends State<PlaylistPage> {
                                       Text(channel.name,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis),
-                                      if (channel.group != null)
-                                        Text(channel.group!,
+                                      if (channel.displayGroup != null)
+                                        Text(channel.displayGroup!,
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
                                             style: Theme.of(context)

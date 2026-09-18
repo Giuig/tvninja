@@ -51,7 +51,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   ///
   /// Derived, not hardcoded. The rows happen to be uniform today because the
   /// 32px logo box is taller than the text column, so the conditional group line
-  /// (`if (channel.group != null)`) changes nothing — but that stops being true
+  /// (`if (channel.displayGroup != null)`) changes nothing — but that stops being true
   /// somewhere above 1.15x font scale, and nothing in this app clamps
   /// textScaler. Same reasoning as the grid extent in `playlist_page.dart`.
   ///
@@ -695,7 +695,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       itemCount: _channels.length,
                       itemBuilder: (context, index) {
                         final channel = _channels[index];
-                        final isCurrent = channel.url == _currentChannel.url;
+                        // Index, not URL. Two channels can carry the same
+                        // stream, and comparing urls lit both of them up as
+                        // "current" at once.
+                        final isCurrent = index == _currentIndex;
                         return InkWell(
                           onTap: () => _selectChannel(index),
                           child: Container(
@@ -758,9 +761,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                       ),
-                                      if (channel.group != null)
+                                      if (channel.displayGroup != null)
                                         Text(
-                                          channel.group!,
+                                          channel.displayGroup!,
                                           style: const TextStyle(
                                               color: Colors.white38,
                                               fontSize: 10),

@@ -171,9 +171,13 @@ class DatabaseNotifier extends ChangeNotifier {
     _playlists.removeWhere((p) => p.id == id);
     await DatabaseService.savePlaylists(_playlists);
     await DatabaseService.clearChannels(id);
-    _favoriteChannelIds.removeWhere((fid) => fid.startsWith('${id}_'));
-    await DatabaseService.saveFavorites(_favoriteChannelIds);
     _buildAllChannelsList();
+    // Same prune as AppStatsNotifier.removePlaylist, and for the same reason:
+    // the old `startsWith('${id}_')` predicate could never match a uniqueId,
+    // which is a bare `url.hashCode` digit string.
+    final live = _allChannels.map((c) => c.uniqueId).toSet();
+    _favoriteChannelIds.removeWhere((fid) => !live.contains(fid));
+    await DatabaseService.saveFavorites(_favoriteChannelIds);
     notifyListeners();
   }
 
