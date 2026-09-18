@@ -77,9 +77,11 @@ class MainActivity : FlutterFragmentActivity() {
      * for video just to get Service.onTaskRemoved (it may never fire for a
      * pinned stack, and it costs a permanent notification), and do not make PiP
      * conditional here without asking — making PiP explicit rather than
-     * automatic was offered and declined for now. The analysis, including the
-     * options that were ruled out and why, is in the ninjapp-claude-rules repo
-     * under tvninja/pip-task-removal/RESEARCH.md.
+     * automatic was offered and declined for now. The manifest attributes that
+     * were checked and ruled out — excludeFromRecents, autoRemoveFromRecents,
+     * documentLaunchMode, alwaysRetainTaskState, taskAffinity — all govern how
+     * a task *appears* in Recents, not whether a live one is finished, so none
+     * of them addresses this.
      *
      * The one part of the report that WAS a defect is fixed separately: the
      * screen-on wakelock is no longer held while in PiP. See
