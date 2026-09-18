@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:http/http.dart' as http;
+import 'package:tvninja/services/http_text.dart';
 import '../config/config.dart';
 
 class M3UChannel {
@@ -74,7 +75,7 @@ class M3UParser {
       throw Exception('Failed to load playlist: ${response.statusCode}');
     }
 
-    yield* _parseLines(response.body.split('\n'), playlistId);
+    yield* _parseLines(utf8Body(response).split('\n'), playlistId);
   }
 
   static Stream<M3UChannel> parseFromString(String content, String playlistId) {

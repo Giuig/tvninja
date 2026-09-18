@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:tvninja/services/http_text.dart';
 import 'package:tvninja/config/config.dart';
 
 enum XtreamStreamType { live, vod, series }
@@ -134,7 +135,7 @@ class XtreamParser {
       
       if (response.statusCode != 200) return [];
       
-      final List<dynamic> data = jsonDecode(response.body);
+      final List<dynamic> data = jsonDecode(utf8Body(response));
       return data.map((item) => XtreamChannelInfo(
         streamId: item['stream_id'],
         name: item['name'] ?? 'Unknown',
@@ -155,7 +156,7 @@ class XtreamParser {
       
       if (response.statusCode != 200) return [];
       
-      final List<dynamic> data = jsonDecode(response.body);
+      final List<dynamic> data = jsonDecode(utf8Body(response));
       return data.map((item) => XtreamChannelInfo(
         streamId: item['stream_id'],
         name: item['name'] ?? 'Unknown',
@@ -178,7 +179,7 @@ class XtreamParser {
       
       if (response.statusCode != 200) return [];
       
-      final List<dynamic> data = jsonDecode(response.body);
+      final List<dynamic> data = jsonDecode(utf8Body(response));
       return data.map((item) => XtreamChannelInfo(
         seriesId: item['id'],
         name: item['name'] ?? 'Unknown',
@@ -201,7 +202,7 @@ class XtreamParser {
       
       if (response.statusCode != 200) return null;
       
-      final Map<String, dynamic> data = jsonDecode(response.body);
+      final Map<String, dynamic> data = jsonDecode(utf8Body(response));
       final serverInfo = data['server_info'] ?? {};
       final userInfo = data['user_info'] ?? {};
       
