@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:tvninja/services/http_text.dart';
 
 class IptvCountry {
   final String code; // uppercase (e.g. "US")
@@ -62,11 +63,11 @@ class IptvOrgService {
     }
 
     final rawCountries =
-        (jsonDecode(responses[0].body) as List).cast<Map<String, dynamic>>();
+        (jsonDecode(utf8Body(responses[0])) as List).cast<Map<String, dynamic>>();
     final rawLanguages =
-        (jsonDecode(responses[1].body) as List).cast<Map<String, dynamic>>();
+        (jsonDecode(utf8Body(responses[1])) as List).cast<Map<String, dynamic>>();
     final rawCategories =
-        (jsonDecode(responses[2].body) as List).cast<Map<String, dynamic>>();
+        (jsonDecode(utf8Body(responses[2])) as List).cast<Map<String, dynamic>>();
 
     // Build set of language codes that appear in at least one country's
     // languages[] array. This filters 7,000+ ISO 639-3 codes down to the
