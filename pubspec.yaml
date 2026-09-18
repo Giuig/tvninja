@@ -3,7 +3,7 @@ description: IPTV M3U8 Viewer - Watch your favorite TV channels
 
 publish_to: "none"
 
-version: 1.5.0
+version: 1.5.1
 
 environment:
   # 3.4 is ninja_material's floor (unchanged v1.6.0 -> v1.6.3) — it uses `web: ^1.1.0`, which
@@ -20,7 +20,7 @@ dependencies:
   ninja_material:
     git:
       url: https://github.com/Giuig/ninja_material.git
-      ref: v1.6.3
+      ref: v1.6.4
 
   # Used directly by lib/config/config.dart. Declared rather than relied on
   # transitively through ninja_material: an app that imports a package should say
