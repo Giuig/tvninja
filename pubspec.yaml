@@ -22,6 +22,13 @@ dependencies:
       url: https://github.com/Giuig/ninja_material.git
       ref: v1.6.3
 
+  # Used directly by lib/config/config.dart. Declared rather than relied on
+  # transitively through ninja_material: an app that imports a package should say
+  # so, or a change in the package's own constraint can move this app's storage
+  # layer without anything here mentioning it. Matches ninja_material's ^2.5.4,
+  # so resolution is unchanged.
+  shared_preferences: ^2.5.4
+
   # IPTV dependencies
   media_kit: ^1.1.11
   media_kit_video: ^2.0.1

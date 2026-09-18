@@ -25,9 +25,32 @@ class Channel {
     this.userAgent,
   });
 
-  /// Unique ID based on URL only - stable across app restarts and platforms
+  /// Unique ID based on URL only.
+  ///
+  /// **Deliberate: a favourite follows the stream, not the playlist entry.**
+  /// The same channel present in two playlists is one favourite, and removing
+  /// one of those playlists leaves it favourited in the other. Chosen 2026-09-18
+  /// over scoping the id to the playlist, which would have been tidier
+  /// conceptually but invalidated every saved favourite and needed a migration.
+  ///
+  /// Consequence to keep in mind: ids outlive the channels they came from, so
+  /// anything that deletes channels must prune the favourites that no longer
+  /// match — see `removePlaylist`.
   String get uniqueId {
     return url.hashCode.abs().toString();
+  }
+
+  /// The group, or null when there is nothing worth showing.
+  ///
+  /// Playlists do not agree on how to say "no category". iptv-org writes the
+  /// literal string `Undefined` — 77 of the 320 channels in its Italy list —
+  /// and others use an empty attribute. Printing the word "Undefined" under a
+  /// channel name is our choice, not their data, so both collapse to null here.
+  String? get displayGroup {
+    final g = group?.trim();
+    if (g == null || g.isEmpty) return null;
+    if (g.toLowerCase() == 'undefined') return null;
+    return g;
   }
 
   Map<String, dynamic> toJson() {
@@ -337,8 +360,20 @@ class AppStatsNotifier extends ChangeNotifier {
 
   Future<void> removePlaylist(String id) async {
     _playlists.removeWhere((p) => p.id == id);
-    _favoriteChannelIds.removeWhere((fid) => fid.startsWith('${id}_'));
     _buildAllChannelsList();
+    // Prune favourites whose channel no longer exists anywhere.
+    //
+    // This replaces a `removeWhere((fid) => fid.startsWith('${id}_'))` that
+    // could never match: uniqueId is `url.hashCode`, a bare digit string, while
+    // that prefix belongs to the Hive box keys. It looked like cleanup and did
+    // nothing, so ids accumulated forever and re-adding a playlist silently
+    // resurrected old favourites.
+    //
+    // Pruned here rather than on load: this is the one moment we know channels
+    // were deliberately removed. Doing it at load time would risk wiping
+    // favourites whenever a playlist happened to be missing.
+    final live = _allChannels.map((c) => c.uniqueId).toSet();
+    _favoriteChannelIds.removeWhere((fid) => !live.contains(fid));
     _cachedFavoriteChannels = null;
     await _saveData();
     notifyListeners();
