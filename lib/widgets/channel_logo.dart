@@ -62,6 +62,13 @@ class ChannelLogo extends StatelessWidget {
           // well would squash a 512x63 banner into a square and distort it under
           // BoxFit.contain. Width alone preserves aspect ratio and already
           // covers every oversized logo measured above, which are square-ish.
+          //
+          // Flutter itself does have ResizeImagePolicy.fit, which would treat
+          // the pair as a bounding box and make passing both safe — but
+          // cached_network_image (3.4.1) hands the values to octo_image, which
+          // calls ResizeImage.resizeIfNeeded without a policy argument, so the
+          // default `exact` is the only reachable behaviour. Recorded so the
+          // next reader does not have to re-derive it from package source.
           memCacheWidth: cacheWidth,
           errorWidget: (_, __, ___) => fallbackBuilder(context),
         );
