@@ -39,6 +39,83 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _isAudioModeActive = false;
   bool _isInPipMode = false;
   bool _channelListExpanded = false;
+
+  /// Drives the quick channel list so it can be centred on the current channel.
+  ///
+  /// The list is only mounted while [_channelListExpanded] is true, so every use
+  /// must check `hasClients` first — zapping with the list closed is the common
+  /// case, not the exception.
+  final ScrollController _channelListScrollController = ScrollController();
+
+  /// Height of one row in the quick channel list.
+  ///
+  /// Derived, not hardcoded. The rows happen to be uniform today because the
+  /// 32px logo box is taller than the text column, so the conditional group line
+  /// (`if (channel.group != null)`) changes nothing — but that stops being true
+  /// somewhere above 1.15x font scale, and nothing in this app clamps
+  /// textScaler. Same reasoning as the grid extent in `playlist_page.dart`.
+  ///
+  /// The 28.0 is this list's own two text lines at stock scale (`fontSize: 13`
+  /// for the name plus `fontSize: 10` for the group) — revisit it if either
+  /// changes.
+  double _channelRowExtent(BuildContext context) {
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final textHeight = 28.0 * textScale;
+    final content = textHeight < 32.0 ? 32.0 : textHeight;
+    return content + 16; // vertical padding, 8 top + 8 bottom
+  }
+
+  /// Offset that puts row [index] in the middle of the viewport, clamped so the
+  /// ends of the list do not overscroll.
+  double _offsetToCentre(int index, double extent) {
+    final position = _channelListScrollController.position;
+    final target =
+        index * extent - (position.viewportDimension - extent) / 2;
+    return target.clamp(0.0, position.maxScrollExtent);
+  }
+
+  /// Whether row [index] is currently on screen.
+  bool _rowIsVisible(int index, double extent) {
+    final position = _channelListScrollController.position;
+    final top = index * extent;
+    return top + extent > position.pixels &&
+        top < position.pixels + position.viewportDimension;
+  }
+
+  /// Centres the quick list on the current channel.
+  ///
+  /// [animate] is false when the list is opening: it is appearing on screen at
+  /// that same moment, and an animated scroll from offset 0 would read as the
+  /// list scrolling itself *after* it appeared. On a zap the list is already on
+  /// screen and the user is watching it, so the movement should be animated.
+  void _centreOnCurrentChannel({required bool animate}) {
+    if (!_channelListScrollController.hasClients) return;
+    final extent = _channelRowExtent(context);
+    final target = _offsetToCentre(_currentIndex, extent);
+    if (animate) {
+      _channelListScrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    } else {
+      _channelListScrollController.jumpTo(target);
+    }
+  }
+
+  /// Re-centres after a zap, but only when the user is actually looking at the
+  /// current channel.
+  ///
+  /// If they have scrolled off to browse, leaving the list where they put it
+  /// matters more than keeping the highlight centred — yanking it away mid-scroll
+  /// is the usual complaint about always-follow list behaviour.
+  void _followCurrentChannelIfVisible() {
+    if (!_channelListExpanded) return;
+    if (!_channelListScrollController.hasClients) return;
+    final extent = _channelRowExtent(context);
+    if (!_rowIsVisible(_currentIndex, extent)) return;
+    _centreOnCurrentChannel(animate: true);
+  }
   bool _isFullscreen = false;
 
   /// Fullscreen-only: fill the screen instead of letterboxing.
@@ -255,6 +332,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _bufferingSubscription?.cancel();
     _pipSubscription?.cancel();
     _controlsHideTimer?.cancel();
+    _channelListScrollController.dispose();
     PipService.setFullscreenVideoMode(false);
     // Unconditionally, and NOT inside the `_isFullscreen` branch below where it
     // used to sit. That was harmless only while the lock was taken in
@@ -503,6 +581,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _errorMessage = '';
     });
     _syncDerivedPlaybackState();
+    _followCurrentChannelIfVisible();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
@@ -516,12 +595,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _errorMessage = '';
     });
     _syncDerivedPlaybackState();
+    _followCurrentChannelIfVisible();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
     _switchAudioChannelIfNeeded();
   }
 
   void _toggleChannelList() {
     setState(() => _channelListExpanded = !_channelListExpanded);
+    if (!_channelListExpanded) return;
+    // The ListView does not exist yet at the moment the flag flips, so the
+    // controller has no clients until after this frame lays it out.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _centreOnCurrentChannel(animate: false);
+    });
   }
 
   void _selectChannel(int index) {
@@ -602,6 +688,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   // Channel list
                   Expanded(
                     child: ListView.builder(
+                      controller: _channelListScrollController,
+                      // Fixed extent: makes the centring arithmetic exact rather
+                      // than approximate, and saves the list measuring every row.
+                      itemExtent: _channelRowExtent(context),
                       itemCount: _channels.length,
                       itemBuilder: (context, index) {
                         final channel = _channels[index];
