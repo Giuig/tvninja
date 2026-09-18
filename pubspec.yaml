@@ -6,7 +6,7 @@ publish_to: "none"
 version: 1.4.0
 
 environment:
-  # 3.4 is ninja_material's floor as of v1.6.0 — it uses `web: ^1.1.0`, which
+  # 3.4 is ninja_material's floor (unchanged v1.6.0 -> v1.6.3) — it uses `web: ^1.1.0`, which
   # resolves to web-1.1.1, and that declares `sdk: ^3.4.0`. Raised with the ref
   # bump rather than after it: pub resolves the effective floor anyway, so
   # nothing breaks today, but leaving 3.1.2 would mean this app's declared
@@ -17,11 +17,10 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # TODO: Change back to git ref before committing
   ninja_material:
     git:
       url: https://github.com/Giuig/ninja_material.git
-      ref: v1.6.0
+      ref: v1.6.3
 
   # IPTV dependencies
   media_kit: ^1.1.11
