@@ -203,9 +203,19 @@ class AppStatsNotifier extends ChangeNotifier {
     _loadData();
   }
 
+  /// Seed playlist for a fresh **debug** install only — see the `kDebugMode`
+  /// guard in [_loadData]. A release build never fetches this.
+  ///
+  /// Points at iptv-org's own Italy list rather than a third party's mirror of
+  /// it: iptv-org is the upstream this app already sends people to for browsing
+  /// channels, it is maintained and rebuilt continuously, and its URL scheme
+  /// (`/countries/<code>.m3u`) is stable. The previous value was one
+  /// contributor's personal repo — fine while it lasted, but nothing guaranteed
+  /// it would keep existing, and a dead seed makes a fresh debug install look
+  /// like the parser is broken.
   static const String defaultPlaylistUrl =
-      'https://raw.githubusercontent.com/klougithub/TVITALIA-/refs/heads/main/iptvit.m3u';
-  static const String defaultPlaylistName = 'Klou IT (DEBUG)';
+      'https://iptv-org.github.io/iptv/countries/it.m3u';
+  static const String defaultPlaylistName = 'iptv-org IT (DEBUG)';
 
   Playlist _withChannelPlaylistId(Playlist playlist) {
     return playlist.copyWith(
