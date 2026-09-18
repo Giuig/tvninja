@@ -48,7 +48,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// now" choice, not a setting someone should be able to leave on by accident
   /// and then wonder why everyone looks wide.
   bool _stretchToFill = false;
-  Orientation? _previousOrientation;
 
   late List<Channel> _channels;
   late int _currentIndex;
@@ -121,7 +120,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // chrome, so entering with it hidden would leave a bare video and no
     // visible way back. The auto-hide timer then clears it as usual.
     _showControls();
-    _previousOrientation = MediaQuery.of(context).orientation;
     setState(() => _isFullscreen = true);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     if (!kIsWeb) {
@@ -141,18 +139,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     });
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     if (!kIsWeb) {
-      // Restore previous orientation if known
-      if (_previousOrientation == Orientation.landscape) {
-        SystemChrome.setPreferredOrientations([
-          DeviceOrientation.landscapeLeft,
-          DeviceOrientation.landscapeRight,
-        ]);
-      } else {
-        // Default to portrait if previous orientation unknown or portrait
-        SystemChrome.setPreferredOrientations([
-          DeviceOrientation.portraitUp,
-        ]);
-      }
+      // Release the lock rather than "restoring" an orientation. This used to
+      // pick landscape-or-portrait from whatever was captured on the way in,
+      // which does not restore anything — it *pins* the app to that one
+      // orientation for the rest of the process, so autorotate silently stopped
+      // working until the app was killed and reopened.
+      //
+      // The empty list is Flutter's "no preference, follow the system", which is
+      // what the rest of the app already runs on: main.dart never sets a
+      // preference and the manifest declares screenOrientation="unspecified".
+      SystemChrome.setPreferredOrientations([]);
     }
     _syncWakelock();
   }
@@ -269,19 +265,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     WakelockPlus.disable();
     if (_isFullscreen) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      // Restore previous orientation if we're disposing while still in fullscreen
-      if (!kIsWeb && _previousOrientation != null) {
-        if (_previousOrientation == Orientation.landscape) {
-          SystemChrome.setPreferredOrientations([
-            DeviceOrientation.landscapeLeft,
-            DeviceOrientation.landscapeRight,
-          ]);
-        } else {
-          SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-        }
-      }
     }
-    // No forced orientation change when leaving the page normally
+    // Outside the `_isFullscreen` branch above, for the same reason
+    // `WakelockPlus.disable()` is: cleanup gated on a flag leaks whenever the
+    // flag does not match reality. Releasing when nothing was ever locked is a
+    // no-op, so unconditional costs nothing and removes the whole class.
+    if (!kIsWeb) {
+      SystemChrome.setPreferredOrientations([]);
+    }
     super.dispose();
   }
 
