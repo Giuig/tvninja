@@ -463,6 +463,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       setState(() {
         _audioOnlyMode = true;
         _isBuffering = true;
+        // This setState is what removes the keyed UnifiedVideoPlayer from the
+        // tree, so its State is disposed inside this very frame and reports
+        // "busy" on the way out. Agreeing with that here is not cosmetic: if
+        // the flag still said false, the callback below would call setState on
+        // this State again while the tree is locked, and Flutter throws.
+        // Reproduced on device before this line existed — tapping audio-only
+        // during smooth playback was enough.
+        _isVideoBuffering = true;
       });
       // Pressing home in audio-only mode should background the app normally,
       // not enter picture-in-picture.
@@ -603,6 +611,20 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_stretchToFillPrefKey, value);
   }
+
+  /// Whether the on-video overlay should offer prev/next channel buttons.
+  ///
+  /// **Fullscreen only.** Windowed playback already has them in the black
+  /// control row beneath the video (`_buildChannelControls`); repeating them a
+  /// few pixels away inside the overlay would be clutter, not a feature.
+  /// Fullscreen hides that row entirely, which is why there was no way to zap
+  /// without leaving fullscreen first.
+  ///
+  /// **Hidden for a single-channel playlist.** `_playNextChannel` and
+  /// `_playPreviousChannel` both early-return on `length <= 1`, so the buttons
+  /// would be visible and dead — the same complaint that produced the
+  /// buffering gate in this batch.
+  bool get _canZap => _isFullscreen && _channels.length > 1;
 
   void _togglePlayPause() {
     if (_isAudioModeActive) {
@@ -1114,46 +1136,80 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                                 child: SizedBox.expand(),
                               ),
                             ),
-                            // A fixed 64px slot either way: swapping a spinner
-                            // for the icon must not reflow the overlay, or a
-                            // stream that rebuffers repeatedly makes the
-                            // control jump under the thumb.
+                            // Centre row: prev / play-pause / next.
                             //
-                            // While the engine is buffering there is nothing
-                            // to pause and nothing to resume, so the button is
-                            // replaced rather than disabled — the same
-                            // treatment `_buildPlaceholder` already gives the
-                            // audio-only surface. This covers mid-playback
-                            // rebuffering too, not just the first load.
+                            // The play-pause slot keeps a fixed 64px either
+                            // way, so nothing reflows when the stream flips
+                            // between buffering and playing — on a flaky
+                            // stream that would be the control jumping under
+                            // the thumb.
+                            //
+                            // While buffering the slot is left EMPTY rather
+                            // than filled with a spinner: there is nothing to
+                            // pause, but `UnifiedVideoPlayer` already draws
+                            // `loadingWidget` over the surface whenever it is
+                            // buffering, so a spinner here is a second one on
+                            // top of the first. Owner reported exactly that.
                             Center(
-                              child: SizedBox(
-                                width: 64,
-                                height: 64,
-                                child: _isVideoBuffering
-                                    ? const CircularProgressIndicator(
-                                        color: Colors.white54,
-                                        strokeWidth: 2.5,
-                                      )
-                                    : IconButton(
-                                        padding: EdgeInsets.zero,
-                                        onPressed: () {
-                                          _togglePlayPause();
-                                          // Re-arm the countdown: the user is
-                                          // still interacting, so the overlay
-                                          // should not vanish mid-use.
-                                          _showControls();
-                                        },
-                                        icon: Icon(_isPlaying
-                                            ? Icons.pause_circle_filled
-                                            : Icons.play_circle_filled),
-                                        iconSize: 64,
-                                        color: Colors.white,
-                                        tooltip: _isPlaying
-                                            ? AppLocalizations.of(context)!
-                                                .pause
-                                            : AppLocalizations.of(context)!
-                                                .play,
-                                      ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (_canZap) ...[
+                                    IconButton(
+                                      onPressed: () {
+                                        _playPreviousChannel();
+                                        _showControls();
+                                      },
+                                      icon: const Icon(Icons.skip_previous),
+                                      iconSize: 40,
+                                      color: Colors.white,
+                                      tooltip: AppLocalizations.of(context)!
+                                          .previousChannel,
+                                    ),
+                                    const SizedBox(width: 16),
+                                  ],
+                                  SizedBox(
+                                    width: 64,
+                                    height: 64,
+                                    child: _isVideoBuffering
+                                        ? null
+                                        : IconButton(
+                                            padding: EdgeInsets.zero,
+                                            onPressed: () {
+                                              _togglePlayPause();
+                                              // Re-arm the countdown: the user
+                                              // is still interacting, so the
+                                              // overlay should not vanish
+                                              // mid-use.
+                                              _showControls();
+                                            },
+                                            icon: Icon(_isPlaying
+                                                ? Icons.pause_circle_filled
+                                                : Icons.play_circle_filled),
+                                            iconSize: 64,
+                                            color: Colors.white,
+                                            tooltip: _isPlaying
+                                                ? AppLocalizations.of(context)!
+                                                    .pause
+                                                : AppLocalizations.of(context)!
+                                                    .play,
+                                          ),
+                                  ),
+                                  if (_canZap) ...[
+                                    const SizedBox(width: 16),
+                                    IconButton(
+                                      onPressed: () {
+                                        _playNextChannel();
+                                        _showControls();
+                                      },
+                                      icon: const Icon(Icons.skip_next),
+                                      iconSize: 40,
+                                      color: Colors.white,
+                                      tooltip: AppLocalizations.of(context)!
+                                          .nextChannel,
+                                    ),
+                                  ],
+                                ],
                               ),
                             ),
                             // Fullscreen toggle, bottom-right in *both*

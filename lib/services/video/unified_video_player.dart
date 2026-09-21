@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'engines/exo_engine.dart';
 import 'engines/mpv_engine.dart';
 import 'engines/player_engine.dart';
@@ -106,7 +107,31 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     final busy = _isBuffering || !_isInitialized;
     if (busy == _lastReportedBusy) return;
     _lastReportedBusy = busy;
-    widget.onBufferingChanged?.call(busy);
+
+    // Captured locally: some of the paths below run from `dispose()`, and
+    // touching `widget` after that throws.
+    final notify = widget.onBufferingChanged;
+    if (notify == null) return;
+
+    // Deliver after the frame if we are inside one.
+    //
+    // This runs from teardown paths the parent itself triggered with its own
+    // `setState` — swapping this player out for the audio placeholder disposes
+    // this State within that same frame, and reporting straight back into the
+    // parent is then a nested `setState` on a locked tree. That is not
+    // theoretical: it threw `setState() or markNeedsBuild() called when widget
+    // tree was locked` on device, from nothing more exotic than tapping
+    // audio-only during smooth playback.
+    //
+    // Outside a build, deliver immediately — there is no reason to cost the UI
+    // a frame.
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.persistentCallbacks ||
+        phase == SchedulerPhase.midFrameMicrotasks) {
+      SchedulerBinding.instance.addPostFrameCallback((_) => notify(busy));
+    } else {
+      notify(busy);
+    }
   }
 
   void _setBuffering(bool buffering, {bool rebuild = true}) {
