@@ -20,7 +20,7 @@ dependencies:
   ninja_material:
     git:
       url: https://github.com/Giuig/ninja_material.git
-      ref: v1.6.5
+      ref: v1.6.6
 
   # Used directly by lib/config/config.dart. Declared rather than relied on
   # transitively through ninja_material: an app that imports a package should say
