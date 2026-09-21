@@ -240,6 +240,34 @@ class AppStatsNotifier extends ChangeNotifier {
       'https://iptv-org.github.io/iptv/countries/it.m3u';
   static const String defaultPlaylistName = 'iptv-org IT (DEBUG)';
 
+  /// Last-resort seed when [defaultPlaylistUrl] cannot be fetched — **debug
+  /// only**, same `kDebugMode` guard as the seed itself.
+  ///
+  /// The iptv-org seed above fixed a *dead upstream*, but it still needs the
+  /// network: offline, behind a captive portal, or while iptv-org is down, a
+  /// fresh debug install used to end up with a playlist containing zero
+  /// channels — which looks exactly like the parser failing, the very thing
+  /// that seed was chosen to avoid.
+  ///
+  /// These three need no fetch and no M3U parse: they are purpose-built,
+  /// long-lived HLS test assets (Mux's and Apple's reference streams, and the
+  /// Sintel demo). They are deliberately NOT real TV channels — the name makes
+  /// it obvious you are looking at the offline fallback and not at content.
+  static const List<(String, String)> debugFallbackStreams = [
+    ('Mux Test Stream', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'),
+    (
+      'Apple BipBop',
+      'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8'
+    ),
+    (
+      'Sintel HLS',
+      'https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8'
+    ),
+  ];
+
+  static const String debugFallbackPlaylistName =
+      'Built-in test streams (DEBUG)';
+
   Playlist _withChannelPlaylistId(Playlist playlist) {
     return playlist.copyWith(
       channels: playlist.channels
@@ -296,13 +324,22 @@ class AppStatsNotifier extends ChangeNotifier {
         )));
         _loadError = null;
       } catch (e) {
-        debugPrint('Failed to load default playlist: $e');
-        _loadError = 'Failed to load default playlist: $e';
-        _playlists.add(Playlist(
-          id: 'default_italian',
-          name: defaultPlaylistName,
-          url: defaultPlaylistUrl,
-        ));
+        // Fall back to the built-in streams rather than an empty playlist.
+        // An entry with zero channels is indistinguishable from a broken
+        // parser, and leaves a fresh debug install with nothing to play.
+        debugPrint(
+            'Failed to load default playlist ($e) - seeding built-in test streams');
+        _loadError = 'Could not fetch $defaultPlaylistName ($e). '
+            'Using $debugFallbackPlaylistName instead.';
+        _playlists.add(_withChannelPlaylistId(Playlist(
+          id: 'debug_fallback_streams',
+          name: debugFallbackPlaylistName,
+          url: '',
+          channels: [
+            for (final (name, url) in debugFallbackStreams)
+              Channel(name: name, url: url, group: 'Test'),
+          ],
+        )));
       }
     }
 
