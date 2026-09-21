@@ -16,6 +16,19 @@ class UnifiedVideoPlayer extends StatefulWidget {
   final String? channelLogo;
   final bool autoPlay;
   final void Function(bool isPlaying)? onPlayingChanged;
+
+  /// Fired when the engine starts or stops buffering.
+  ///
+  /// The parallel of [onPlayingChanged], and added for the same reason: the
+  /// page needs to know. `player_page` gates its play/pause control on this,
+  /// because a stream that has not started yet cannot be paused and a button
+  /// that responds to touch and does nothing is worse than no button.
+  ///
+  /// This is the only honest source for the video path. `player_page` has an
+  /// `_isBuffering` of its own, but it is fed from `NativeAudioService` behind
+  /// an `_isAudioModeActive` guard, so during video it holds a stale value.
+  final void Function(bool buffering)? onBufferingChanged;
+
   final void Function(Duration position)? onPositionChanged;
   final void Function(String? error)? onError;
   final void Function()? onCompleted;
@@ -36,6 +49,7 @@ class UnifiedVideoPlayer extends StatefulWidget {
     this.channelLogo,
     this.autoPlay = true,
     this.onPlayingChanged,
+    this.onBufferingChanged,
     this.onPositionChanged,
     this.onError,
     this.onCompleted,
@@ -59,6 +73,50 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   String _errorMessage = '';
   bool _isPlaying = false;
   bool _isBuffering = false;
+
+  /// Last value handed to [UnifiedVideoPlayer.onBufferingChanged].
+  ///
+  /// Starts **true**, matching reality: `_isInitialized` is false until an
+  /// engine is up, so the player genuinely is busy from the first frame. This
+  /// is also what avoids notifying from `initState` — the parent's callback
+  /// calls `setState` on the parent, and doing that while this widget is
+  /// building is an error. Instead both sides simply start in the same honest
+  /// state and only transitions are reported.
+  bool _lastReportedBusy = true;
+
+  /// Tells the parent whether the engine can accept a play/pause at all.
+  ///
+  /// **Deliberately `_isBuffering || !_isInitialized`, not raw buffering.** Two
+  /// wrong versions were tried first, and the second one shipped a visible bug
+  /// before it was measured:
+  ///
+  /// 1. Notifying only from `_handleEngineBuffering` misses `_disposeEngine`,
+  ///    which clears the flag silently — so after a channel switch the engine's
+  ///    next honest `false` was deduped as "no change" and never forwarded,
+  ///    leaving `player_page`'s spinner up over a stream that was plainly
+  ///    playing. Measured: the pause glyph fills ~3457/4096 pixels of the
+  ///    control slot, the stuck spinner ~165.
+  /// 2. Notifying `false` from teardown fixes the stuck spinner and lies: no
+  ///    engine exists at that moment, so "not buffering" reads to the parent as
+  ///    "ready", which is the opposite of the truth.
+  ///
+  /// Folding `_isInitialized` in makes the signal answer the question the
+  /// parent actually asks. Call this after every change to either input.
+  void _reportBusy() {
+    final busy = _isBuffering || !_isInitialized;
+    if (busy == _lastReportedBusy) return;
+    _lastReportedBusy = busy;
+    widget.onBufferingChanged?.call(busy);
+  }
+
+  void _setBuffering(bool buffering, {bool rebuild = true}) {
+    if (_isBuffering != buffering) {
+      _isBuffering = buffering;
+      if (rebuild && mounted) setState(() {});
+    }
+    _reportBusy();
+  }
+
   bool _hasStartedPlaying = false;
 
   /// True from the moment a reconnect attempt is first scheduled until it
@@ -227,7 +285,11 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     _engine = null;
     _isInitialized = false;
     _isPlaying = false;
-    _isBuffering = false;
+    // No setState: teardown reassigns the rest of the state without a rebuild
+    // of its own. `_isInitialized` just went false, so `_reportBusy` inside
+    // this call tells the parent the engine is busy, which is the truth here —
+    // there is no engine.
+    _setBuffering(false, rebuild: false);
     _hasStartedPlaying = false;
     await engineToDispose?.dispose();
   }
@@ -288,10 +350,9 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   }
 
   void _handleEngineBuffering(bool buffering) {
-    if (_isBuffering == buffering) return;
-    if (mounted) {
-      setState(() => _isBuffering = buffering);
-    }
+    final changed = _isBuffering != buffering;
+    _setBuffering(buffering);
+    if (!changed) return;
     if (buffering) {
       // Watchdog fires on every buffering start (initial load or mid-play reconnect)
       _bufferingWatchdog?.cancel();
@@ -372,7 +433,8 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     _bufferingWatchdog?.cancel();
     _bufferingWatchdog = null;
 
-    if (mounted) setState(() { _isBuffering = true; _hasError = false; });
+    _setBuffering(true);
+    if (mounted) setState(() => _hasError = false);
 
     try {
       // isReconnectAttempt: true so a failure rethrows here instead of
@@ -526,6 +588,8 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       if (mounted) {
         setState(() {
           _isInitialized = true;
+          // Busy may have just become false; the parent is owed that.
+          _reportBusy();
         });
       }
     } catch (e) {

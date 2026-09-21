@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tvninja/config/config.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:tvninja/l10n/app_localizations.dart';
@@ -120,11 +121,38 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   /// Fullscreen-only: fill the screen instead of letterboxing.
   ///
-  /// Deliberately **not** persisted and reset on leaving fullscreen. Stretching
-  /// distorts the picture, so it is a per-session "I want the bars gone right
-  /// now" choice, not a setting someone should be able to leave on by accident
-  /// and then wonder why everyone looks wide.
+  /// **Persisted, and deliberately so — owner decision, 2026-09-21.** This
+  /// reverses the original rule, which reset it on leaving fullscreen on the
+  /// grounds that stretching distorts the picture and nobody should be able to
+  /// leave it on by accident and later wonder why everyone looks wide. The
+  /// owner was shown that reasoning and overruled it: the choice now survives
+  /// leaving fullscreen, leaving the player, and restarting the app.
+  ///
+  /// The scope was specified with it: the fullscreen fit button is the **only**
+  /// way to change this. Do not add a Settings row for it.
+  ///
+  /// So if a later session finds this surprising — it is not a missing reset.
   bool _stretchToFill = false;
+
+  /// SharedPreferences key for [_stretchToFill].
+  static const String _stretchToFillPrefKey = 'stretch_to_fill';
+
+  /// Whether the *video* engine is currently buffering.
+  ///
+  /// Separate from [_isBuffering] on purpose, not by oversight. That field is
+  /// fed from `NativeAudioService` behind an `_isAudioModeActive` guard, so it
+  /// describes the audio path only and is stale during video — which makes it
+  /// exactly the wrong thing to gate a video control on, while looking exactly
+  /// like the right thing. Unifying the two is a bigger change than the bug
+  /// that prompted this, and would put the working audio placeholder at risk.
+  ///
+  /// Starts **true**, and that default is the fix rather than a detail: the
+  /// player reports only *transitions*, and on a fresh open there is no
+  /// transition to report until the engine is up — so a `false` default left
+  /// the control live for the entire initial load, which is the exact case
+  /// that was reported. `UnifiedVideoPlayer._lastReportedBusy` starts true to
+  /// match.
+  bool _isVideoBuffering = true;
 
   late List<Channel> _channels;
   late int _currentIndex;
@@ -155,6 +183,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _isAudioModeActive = true;
     }
 
+    unawaited(_restoreStretchToFill());
     _initializePlayer();
     _initializeNativeAudio();
     _listenToPipState();
@@ -210,9 +239,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _exitFullscreen() {
     _showControls();
+    // _stretchToFill is NOT reset here any more — see its declaration. It is a
+    // persisted preference now, so leaving fullscreen must leave it alone.
     setState(() {
       _isFullscreen = false;
-      _stretchToFill = false;
     });
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     if (!kIsWeb) {
@@ -556,6 +586,24 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
   }
 
+  /// Loads the persisted fullscreen fit.
+  ///
+  /// Async and unawaited on purpose: the default is false and the value only
+  /// matters once the user reaches fullscreen, which is many frames away. Do
+  /// not turn this into a blocking read to make the first frame "correct" —
+  /// there is nothing to correct.
+  Future<void> _restoreStretchToFill() async {
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getBool(_stretchToFillPrefKey) ?? false;
+    if (!mounted || stored == _stretchToFill) return;
+    setState(() => _stretchToFill = stored);
+  }
+
+  Future<void> _persistStretchToFill(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_stretchToFillPrefKey, value);
+  }
+
   void _togglePlayPause() {
     if (_isAudioModeActive) {
       if (_isPlaying) {
@@ -579,6 +627,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _currentChannel = _channels[_currentIndex];
       _hasError = false;
       _errorMessage = '';
+      // The new stream has not reported anything yet. Assume buffering
+      // rather than leaving the play/pause control live on the strength of
+      // the *previous* channel's last engine event.
+      _isVideoBuffering = true;
     });
     _syncDerivedPlaybackState();
     _followCurrentChannelIfVisible();
@@ -593,6 +645,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _currentChannel = _channels[_currentIndex];
       _hasError = false;
       _errorMessage = '';
+      // The new stream has not reported anything yet. Assume buffering
+      // rather than leaving the play/pause control live on the strength of
+      // the *previous* channel's last engine event.
+      _isVideoBuffering = true;
     });
     _syncDerivedPlaybackState();
     _followCurrentChannelIfVisible();
@@ -617,6 +673,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _currentChannel = _channels[index];
       _hasError = false;
       _errorMessage = '';
+      // Same reason as the next/previous paths: the new stream has reported
+      // nothing yet, so do not leave the control live on stale state.
+      _isVideoBuffering = true;
     });
     _syncDerivedPlaybackState();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
@@ -1055,23 +1114,46 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                                 child: SizedBox.expand(),
                               ),
                             ),
+                            // A fixed 64px slot either way: swapping a spinner
+                            // for the icon must not reflow the overlay, or a
+                            // stream that rebuffers repeatedly makes the
+                            // control jump under the thumb.
+                            //
+                            // While the engine is buffering there is nothing
+                            // to pause and nothing to resume, so the button is
+                            // replaced rather than disabled — the same
+                            // treatment `_buildPlaceholder` already gives the
+                            // audio-only surface. This covers mid-playback
+                            // rebuffering too, not just the first load.
                             Center(
-                              child: IconButton(
-                                onPressed: () {
-                                  _togglePlayPause();
-                                  // Re-arm the countdown: the user is still
-                                  // interacting, so the overlay should not
-                                  // vanish mid-use.
-                                  _showControls();
-                                },
-                                icon: Icon(_isPlaying
-                                    ? Icons.pause_circle_filled
-                                    : Icons.play_circle_filled),
-                                iconSize: 64,
-                                color: Colors.white,
-                                tooltip: _isPlaying
-                                    ? AppLocalizations.of(context)!.pause
-                                    : AppLocalizations.of(context)!.play,
+                              child: SizedBox(
+                                width: 64,
+                                height: 64,
+                                child: _isVideoBuffering
+                                    ? const CircularProgressIndicator(
+                                        color: Colors.white54,
+                                        strokeWidth: 2.5,
+                                      )
+                                    : IconButton(
+                                        padding: EdgeInsets.zero,
+                                        onPressed: () {
+                                          _togglePlayPause();
+                                          // Re-arm the countdown: the user is
+                                          // still interacting, so the overlay
+                                          // should not vanish mid-use.
+                                          _showControls();
+                                        },
+                                        icon: Icon(_isPlaying
+                                            ? Icons.pause_circle_filled
+                                            : Icons.play_circle_filled),
+                                        iconSize: 64,
+                                        color: Colors.white,
+                                        tooltip: _isPlaying
+                                            ? AppLocalizations.of(context)!
+                                                .pause
+                                            : AppLocalizations.of(context)!
+                                                .play,
+                                      ),
                               ),
                             ),
                             // Fullscreen toggle, bottom-right in *both*
@@ -1105,8 +1187,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                                 child: SafeArea(
                                   child: IconButton(
                                     onPressed: () {
-                                      setState(() =>
-                                          _stretchToFill = !_stretchToFill);
+                                      final next = !_stretchToFill;
+                                      setState(() => _stretchToFill = next);
+                                      // This button is the only way to change
+                                      // the preference, so it is also the only
+                                      // place that writes it.
+                                      unawaited(_persistStretchToFill(next));
                                       // The user is still interacting; do not
                                       // let the overlay vanish mid-comparison.
                                       _showControls();
@@ -1252,6 +1338,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             _isPlaying = playing;
           });
           _syncWakelock();
+        }
+      },
+      onBufferingChanged: (buffering) {
+        if (mounted && _isVideoBuffering != buffering) {
+          debugPrint('[PlayerPage] _isVideoBuffering -> $buffering');
+          setState(() => _isVideoBuffering = buffering);
         }
       },
       onError: (error) {
