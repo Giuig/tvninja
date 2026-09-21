@@ -257,8 +257,11 @@ class _FavoriteCard extends StatelessWidget {
     if (currentUrl != null && currentUrl != channel.url) {
       await NativeAudioService.stop();
     }
-    Navigator.push(
-      context,
+    if (!context.mounted) return;
+    // Root navigator, not the tab's own: a plain push here would land the
+    // player inside the tab, under FirstPage's bottom nav bar, instead of
+    // covering it — see the nested-tab-navigation plan.
+    Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute(
         builder: (_) => PlayerPage(
           channel: channel,

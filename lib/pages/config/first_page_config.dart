@@ -20,6 +20,15 @@ final FirstPageConfig appFirstPageConfig = FirstPageConfig(
   // The package stands the rail down while its side-by-side player layout is
   // active, so this cannot collide with that mode.
   responsiveNavigation: true,
+  // Opt in to ninja_material's per-tab Navigators. It defaults to false in
+  // the package, so bumping the ref alone would have changed nothing — this
+  // line is what actually turns it on.
+  //
+  // Without it, drilling into a playlist was a field swap on a single route,
+  // not real navigation, so the system back button had nothing of its own to
+  // pop and exited the app instead of returning to the playlist list. Each
+  // tab getting its own back stack is what makes that a real route to pop.
+  nestedNavigation: true,
 );
 
 /// Simple pages - channel tapping navigates to dedicated PlayerPage

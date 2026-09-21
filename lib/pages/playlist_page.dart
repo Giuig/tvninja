@@ -1,15 +1,12 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:tvninja/config/config.dart';
 import 'package:tvninja/l10n/app_localizations.dart';
 import 'package:tvninja/pages/add_playlist_page.dart';
-import 'package:tvninja/pages/player_page.dart';
-import 'package:tvninja/services/native_audio_service.dart';
+import 'package:tvninja/pages/channel_list_page.dart';
 import 'package:tvninja/services/m3u_parser.dart';
 import 'package:tvninja/services/xtream_parser.dart';
-import 'package:tvninja/widgets/channel_logo.dart';
 
 class PlaylistPage extends StatefulWidget {
   const PlaylistPage({super.key});
@@ -19,74 +16,25 @@ class PlaylistPage extends StatefulWidget {
 }
 
 class _PlaylistPageState extends State<PlaylistPage> {
-  final _searchController = TextEditingController();
-  Playlist? _selectedPlaylist;
-  String _searchQuery = '';
-  String? _selectedGroup;
-  Timer? _debounceTimer;
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    _debounceTimer?.cancel();
-    super.dispose();
-  }
-
-  void _selectPlaylist(Playlist playlist) {
-    setState(() {
-      _selectedPlaylist = playlist;
-      _searchQuery = '';
-      _selectedGroup = null;
-      _searchController.clear();
-    });
-  }
-
-  void _clearSelection() {
-    setState(() {
-      _selectedPlaylist = null;
-      _searchQuery = '';
-      _selectedGroup = null;
-    });
-  }
-
-  void _onSearchChanged(String value) {
-    _debounceTimer?.cancel();
-    _debounceTimer = Timer(const Duration(milliseconds: 300), () {
-      if (mounted) {
-        setState(() => _searchQuery = value);
-      }
-    });
-  }
-
-  List<Channel> _getFilteredChannels(List<Channel> channels) {
-    var filtered = channels;
-
-    if (_selectedGroup != null && _selectedGroup!.isNotEmpty) {
-      filtered = filtered
-          .where((c) =>
-              c.displayGroup?.toLowerCase() == _selectedGroup!.toLowerCase())
-          .toList();
-    }
-
-    if (_searchQuery.isNotEmpty) {
-      final query = _searchQuery.toLowerCase();
-      filtered =
-          filtered.where((c) => c.name.toLowerCase().contains(query)).toList();
-    }
-
-    return filtered;
-  }
-
-  Set<String> _getGroups(List<Channel> channels) {
-    return channels
-        .where((c) => c.displayGroup != null)
-        .map((c) => c.displayGroup!)
-        .toSet();
+  void _openPlaylist(Playlist playlist) {
+    // Plain push, on this tab's own navigator: the channel list belongs to
+    // the playlists tab's own back stack, so switching tabs and coming back
+    // finds it exactly as it was left.
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChannelListPage(playlistId: playlist.id),
+      ),
+    );
   }
 
   void _showAddDialog() {
-    Navigator.push(
-        context, MaterialPageRoute(builder: (_) => const AddPlaylistPage()));
+    // Root navigator, not this tab's: this is a modal-style full-page form
+    // rather than something that belongs to the playlists tab's own back
+    // stack, so — like the PlayerPage pushes — it should cover the whole
+    // screen, bottom nav bar included, not render confined to the tab area.
+    Navigator.of(context, rootNavigator: true).push(
+        MaterialPageRoute(builder: (_) => const AddPlaylistPage()));
   }
 
   void _showPlaylistMenu(Playlist playlist) {
@@ -195,12 +143,10 @@ class _PlaylistPageState extends State<PlaylistPage> {
             channels.map((c) => c.copyWith(playlistId: playlistId)).toList(),
       );
       if (mounted) {
+        // ChannelListPage re-reads the playlist from AppStatsNotifier on
+        // every build, so updating it here is enough — no snapshot on this
+        // page to re-sync by hand any more.
         context.read<AppStatsNotifier>().updatePlaylist(updated);
-        if (_selectedPlaylist?.id == playlist.id) {
-          setState(() {
-            _selectedPlaylist = updated;
-          });
-        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text(AppLocalizations.of(context)!
@@ -231,9 +177,9 @@ class _PlaylistPageState extends State<PlaylistPage> {
             onPressed: () {
               context.read<AppStatsNotifier>().removePlaylist(playlist.id);
               Navigator.pop(ctx);
-              if (_selectedPlaylist?.id == playlist.id) {
-                _clearSelection();
-              }
+              // If a ChannelListPage for this playlist is open (on this
+              // tab's stack), its own build will find no matching playlist
+              // on the next AppStatsNotifier update and pop itself.
             },
             child: Text(AppLocalizations.of(context)!.delete,
                 style: const TextStyle(color: Colors.red)),
@@ -250,25 +196,13 @@ class _PlaylistPageState extends State<PlaylistPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_selectedPlaylist != null
-            ? _selectedPlaylist!.name
-            : AppLocalizations.of(context)!.playlists),
-        leading: _selectedPlaylist != null
-            ? IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: _clearSelection,
-              )
-            : null,
+        title: Text(AppLocalizations.of(context)!.playlists),
       ),
-      floatingActionButton: _selectedPlaylist == null
-          ? FloatingActionButton(
-              onPressed: _showAddDialog,
-              child: const Icon(Icons.add),
-            )
-          : null,
-      body: _selectedPlaylist != null
-          ? _buildChannelsList(_selectedPlaylist!)
-          : _buildPlaylistList(playlists),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _showAddDialog,
+        child: const Icon(Icons.add),
+      ),
+      body: _buildPlaylistList(playlists),
     );
   }
 
@@ -316,303 +250,10 @@ class _PlaylistPageState extends State<PlaylistPage> {
             trailing: IconButton(
                 icon: const Icon(Icons.more_vert),
                 onPressed: () => _showPlaylistMenu(playlist)),
-            onTap: () => _selectPlaylist(playlist),
+            onTap: () => _openPlaylist(playlist),
           ),
         );
       },
-    );
-  }
-
-  Widget _buildChannelsList(Playlist playlist) {
-    final allChannels = playlist.channels;
-    final favoriteIds = context.watch<AppStatsNotifier>().favoriteChannelIds;
-    final groups = _getGroups(allChannels);
-    final filteredChannels = _getFilteredChannels(allChannels);
-
-    if (allChannels.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.live_tv,
-                size: 64, color: Theme.of(context).colorScheme.outline),
-            const SizedBox(height: 16),
-            Text(AppLocalizations.of(context)!.noChannels),
-          ],
-        ),
-      );
-    }
-
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(8),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _searchController,
-                  decoration: InputDecoration(
-                    hintText: AppLocalizations.of(context)!.searchChannels,
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _searchQuery.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              _searchController.clear();
-                              setState(() => _searchQuery = '');
-                            })
-                        : null,
-                    border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-                  ),
-                  onChanged: _onSearchChanged,
-                ),
-              ),
-              if (groups.isNotEmpty) ...[
-                const SizedBox(width: 8),
-                PopupMenuButton<String>(
-                  icon: Badge(
-                    isLabelVisible: _selectedGroup != null,
-                    child: const Icon(Icons.filter_list),
-                  ),
-                  onSelected: (value) {
-                    setState(() {
-                      _selectedGroup = value.isEmpty ? null : value;
-                    });
-                  },
-                  itemBuilder: (context) {
-                    final items = <PopupMenuEntry<String>>[
-                      PopupMenuItem<String>(
-                        value: '',
-                        child: Row(children: [
-                          Icon(_selectedGroup == null ? Icons.check : null,
-                              size: 18),
-                          const SizedBox(width: 8),
-                          Text(AppLocalizations.of(context)!.all),
-                        ]),
-                      ),
-                    ];
-                    for (final g in groups.toList()..sort()) {
-                      items.add(PopupMenuItem<String>(
-                        value: g,
-                        child: Row(children: [
-                          Icon(
-                              _selectedGroup?.toLowerCase() == g.toLowerCase()
-                                  ? Icons.check
-                                  : null,
-                              size: 18),
-                          const SizedBox(width: 8),
-                          Expanded(
-                              child: Text(g, overflow: TextOverflow.ellipsis)),
-                        ]),
-                      ));
-                    }
-                    return items;
-                  },
-                ),
-              ],
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
-              Text(
-                  AppLocalizations.of(context)!
-                      .nChannels(filteredChannels.length),
-                  style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-        ),
-        const SizedBox(height: 8),
-        Expanded(
-          child: filteredChannels.isEmpty
-              ? Center(
-                  child: Text(AppLocalizations.of(context)!.noChannelsFound))
-              : LayoutBuilder(
-                  builder: (context, constraints) {
-                    Widget tileAt(BuildContext context, int index) {
-                      final channel = filteredChannels[index];
-                      final isFavorite = favoriteIds.contains(channel.uniqueId);
-                      return Card(
-                        clipBehavior: Clip.antiAlias,
-                        margin: const EdgeInsets.symmetric(
-                            vertical: 4, horizontal: 8),
-                        child: InkWell(
-                          onTap: () async {
-                            context
-                                .read<AppStatsNotifier>()
-                                .addToRecentlyWatched(channel);
-                            final currentUrl = NativeAudioService.currentUrl;
-                            final isAudioPlaying =
-                                NativeAudioService.currentState.isPlaying ||
-                                    NativeAudioService.isBuffering;
-                            final shouldStartInAudioOnly = currentUrl != null &&
-                                currentUrl == channel.url &&
-                                isAudioPlaying;
-                            if (currentUrl != null && currentUrl != channel.url) {
-                              await NativeAudioService.stop();
-                            }
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => PlayerPage(
-                                  // The whole playlist, not `filteredChannels`.
-                                  // Search and the group filter are a way to
-                                  // *find* a channel; once you are watching, the
-                                  // numbering should be the channel's real
-                                  // position and zapping should not stop at the
-                                  // edge of a filter you have already left
-                                  // behind. It also keeps the quick list's row
-                                  // numbers and the n/total chip agreeing with
-                                  // each other and with the playlist.
-                                  channel: channel,
-                                  channels: playlist.channels,
-                                  initialIndex: playlist.channels.indexOf(channel),
-                                  initialAudioOnly: shouldStartInAudioOnly,
-                                ),
-                              ),
-                            );
-                          },
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 8),
-                            child: Row(
-                              children: [
-                                ClipRRect(
-                                  borderRadius: BorderRadius.circular(4),
-                                  child: ChannelLogo(
-                                    url: channel.logo,
-                                    width: 40,
-                                    height: 40,
-                                    fallbackBuilder: (_) => Container(
-                                      width: 40,
-                                      height: 40,
-                                      decoration: BoxDecoration(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .primaryContainer,
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                      child: Icon(Icons.live_tv,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onPrimaryContainer),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(channel.name,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis),
-                                      if (channel.displayGroup != null)
-                                        Text(channel.displayGroup!,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall),
-                                    ],
-                                  ),
-                                ),
-                                SizedBox(
-                                  width: 40,
-                                  height: 40,
-                                  child: IconButton(
-                                    padding: EdgeInsets.zero,
-                                    iconSize: 20,
-                                    icon: Icon(
-                                        isFavorite
-                                            ? Icons.favorite
-                                            : Icons.favorite_border,
-                                        color: isFavorite ? Colors.red : null),
-                                    onPressed: () => context
-                                        .read<AppStatsNotifier>()
-                                        .toggleFavorite(channel),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    }
-
-                    // One column per ~300 logical px, derived from *width* and
-                    // not orientation: a phone in landscape and a tablet in
-                    // portrait can share a width and should lay out the same.
-                    //
-                    // Measured motivation: this emulator is 1600x900 at density
-                    // 240, i.e. 1067 logical px wide. The single-column list
-                    // showed ~5 of 116 channels there, spending most of every
-                    // row on empty space. Portrait (~393 logical) already showed
-                    // ~12 and was fine, which is why it keeps the ListView below.
-                    final columns =
-                        (constraints.maxWidth / 300).floor().clamp(1, 4);
-
-                    if (columns == 1) {
-                      // Compact widths keep the exact ListView they had, so
-                      // portrait cannot regress: a GridView would impose a fixed
-                      // row height on a layout that is already correct.
-                      return ListView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        itemCount: filteredChannels.length,
-                        itemBuilder: tileAt,
-                      );
-                    }
-
-                    // The grid hands each tile a *tight* height, which the
-                    // ListView never did — so the extent must fit the tallest
-                    // thing the tile can contain, not the usual case.
-                    //
-                    // Budget: Card margin 4+4, inner Padding 8+8, then the
-                    // content, which is whichever is taller of the 40px logo or
-                    // the two text lines. Note this is ONE uniform row height
-                    // for the whole grid, not a per-tile measurement — a
-                    // single-line channel simply gets the shared extent.
-                    //
-                    // 36.0 is bodyMedium (~20) + bodySmall (~16) at the stock
-                    // Material 3 scale; this app sets no custom textTheme. It is
-                    // NOT linked to Theme.of(context) — deriving it live is
-                    // unreliable because TextStyle.height is often null in the
-                    // Material defaults. So: if a custom textTheme is ever added,
-                    // revisit this number.
-                    // Those lines scale with the user's system font size and
-                    // nothing in this app clamps textScaler — so a hardcoded 68
-                    // overflowed at ~1.22x, i.e. Android's ordinary "Large" font
-                    // setting, not an extreme accessibility case. Deriving it
-                    // keeps every scale correct and costs nothing at default.
-                    final textScale = MediaQuery.textScalerOf(context).scale(1);
-                    final textHeight = 36.0 * textScale;
-                    final contentHeight =
-                        textHeight < 40.0 ? 40.0 : textHeight;
-                    final rowExtent = contentHeight + 16 + 8 + 4;
-
-                    return GridView.builder(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      gridDelegate:
-                          SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: columns,
-                        // Fixed extent, not childAspectRatio: the row height must
-                        // stay put as the column count changes, and an aspect
-                        // ratio would make it do exactly the opposite.
-                        mainAxisExtent: rowExtent,
-                      ),
-                      itemCount: filteredChannels.length,
-                      itemBuilder: tileAt,
-                    );
-                  },
-                ),
-        ),
-      ],
     );
   }
 }
