@@ -42,6 +42,22 @@
   <!-- Material Icons -->
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 
+
+  <!-- Shared loading screen, shipped by ninja_material as a package asset.
+       In <head> and NOT async on purpose: a head script blocks first paint,
+       so the first paint already carries the right background instead of
+       flashing white and being corrected a frame later.
+
+       data-prefix MUST match SharedPreferences.setPrefix() in main.dart.
+       A wrong prefix does not error, it silently falls back to the colours
+       below. Those are this app's real resolved ColorScheme and are the
+       first-run fallback only; after one render the app publishes the exact
+       palette and the loader uses that instead. -->
+  <script src="assets/packages/ninja_material/assets/web/ninja_loader.js"
+          data-prefix="tvninja."
+          data-bg-light="#fbf8ff" data-bg-dark="#121318"
+          data-accent-light="#515b92" data-accent-dark="#bac3ff"
+          data-container-light="#efedf4" data-container-dark="#1f1f25"></script>
 </head>
 
 <body>
