@@ -78,11 +78,14 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// Last value handed to [UnifiedVideoPlayer.onBufferingChanged].
   ///
   /// Starts **true**, matching reality: `_isInitialized` is false until an
-  /// engine is up, so the player genuinely is busy from the first frame. This
-  /// is also what avoids notifying from `initState` — the parent's callback
-  /// calls `setState` on the parent, and doing that while this widget is
-  /// building is an error. Instead both sides simply start in the same honest
-  /// state and only transitions are reported.
+  /// engine is up, so the player genuinely is busy from the first frame.
+  /// `player_page`'s mirror starts true to match, so only transitions need
+  /// reporting and the common case needs no notification at `initState` at all.
+  ///
+  /// Web is the exception and does report from `initState`, because nothing on
+  /// that path would ever clear the flag — see [_reportBusy]. That is safe only
+  /// because [_reportBusy] defers itself out of the current frame; do not
+  /// "simplify" it into a direct call.
   bool _lastReportedBusy = true;
 
   /// Tells the parent whether the engine can accept a play/pause at all.
@@ -104,7 +107,14 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// Folding `_isInitialized` in makes the signal answer the question the
   /// parent actually asks. Call this after every change to either input.
   void _reportBusy() {
-    final busy = _isBuffering || !_isInitialized;
+    // `!kIsWeb` is load-bearing, not defensive. On web `build()` returns early
+    // to `WebVideoPlayerWidget` and the whole native engine lifecycle below is
+    // skipped — `_initializePlayer` bails on `kIsWeb`, so `_isInitialized`
+    // never becomes true. Without this the signal would be stuck at "busy"
+    // forever on web and `player_page` would hide its play/pause control for
+    // the entire session. Web keeps its previous behaviour: the control is
+    // always available, because nothing on that path can say otherwise.
+    final busy = !kIsWeb && (_isBuffering || !_isInitialized);
     if (busy == _lastReportedBusy) return;
     _lastReportedBusy = busy;
 
@@ -239,6 +249,10 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       onRetry: _attemptReconnect,
       onGiveUp: _handleReconnectGiveUp,
     );
+    // Both sides start "busy" (see [_lastReportedBusy]), and on web nothing
+    // below would ever clear it. Reporting here does: the call defers itself
+    // out of the current frame, so telling the parent from initState is safe.
+    if (kIsWeb) _reportBusy();
     _initializePlayer();
   }
 
