@@ -48,21 +48,45 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// case, not the exception.
   final ScrollController _channelListScrollController = ScrollController();
 
+  /// Line-height multiplier pinned on both text lines of a quick-list row.
+  ///
+  /// Explicit so the row's height is arithmetic rather than a property of
+  /// whatever font happens to render. See [_channelRowExtent].
+  static const double _channelRowLineHeight = 1.2;
+
   /// Height of one row in the quick channel list.
   ///
-  /// Derived, not hardcoded. The rows happen to be uniform today because the
-  /// 32px logo box is taller than the text column, so the conditional group line
-  /// (`if (channel.displayGroup != null)`) changes nothing — but that stops being true
-  /// somewhere above 1.15x font scale, and nothing in this app clamps
-  /// textScaler. Same reasoning as the grid extent in `playlist_page.dart`.
+  /// The rows are drawn by a `ListView` with a fixed `itemExtent`, because
+  /// [_offsetToCentre] and [_rowIsVisible] are plain arithmetic over it — that
+  /// is what makes centring exact instead of approximate. So this number has to
+  /// be right, and for a long time it was not.
   ///
-  /// The 28.0 is this list's own two text lines at stock scale (`fontSize: 13`
-  /// for the name plus `fontSize: 10` for the group) — revisit it if either
-  /// changes.
+  /// It used to add a hardcoded `28.0` for "13px name plus 10px group line".
+  /// A text line's height comes from the **font's** metrics, not its point
+  /// size, so that number was only ever true for the font it was measured
+  /// against. On web the rows overflowed by exactly 1px (owner screenshot,
+  /// 2026-09-22); Android never did, because Roboto happens to fit.
+  ///
+  /// Measuring with a `TextPainter` was tried next and was also wrong, in a way
+  /// worth recording: the measurement resolved `DefaultTextStyle` at the *page*
+  /// level, where it is Flutter's monospace fallback, while the rows resolve a
+  /// real font further down the tree. It reported a 27px text column for one
+  /// that actually needed 33.
+  ///
+  /// So the height is **pinned instead of predicted**: both `Text`s set
+  /// `height: _channelRowLineHeight`, which makes each line exactly
+  /// `fontSize * 1.2` regardless of font, and this returns the same product.
+  /// Change one and you must change the other — they are the same statement
+  /// written twice, which is why the multiplier is a shared constant.
   double _channelRowExtent(BuildContext context) {
-    final textScale = MediaQuery.textScalerOf(context).scale(1);
-    final textHeight = 28.0 * textScale;
-    final content = textHeight < 32.0 ? 32.0 : textHeight;
+    final scaler = MediaQuery.textScalerOf(context);
+    // 13 for the name, 10 for the group line. Both lines always counted: the
+    // group line is conditional, and the extent has to fit the tallest row.
+    final textHeight = scaler.scale(13 * _channelRowLineHeight) +
+        scaler.scale(10 * _channelRowLineHeight);
+    // The logo box wins at normal text scale; the text wins once scaled up.
+    const logoBox = 32.0;
+    final content = textHeight < logoBox ? logoBox : textHeight;
     return content + 16; // vertical padding, 8 top + 8 bottom
   }
 
@@ -690,7 +714,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _selectChannel(int index) {
     setState(() {
-      _channelListExpanded = false;
+      // The list deliberately stays open. Picking a channel from it is the
+      // fast way to zap, and closing on every pick meant reopening it for the
+      // next one. Owner request, 2026-09-22.
+      //
+      // No re-centring here, unlike the prev/next paths: the row was just
+      // tapped, so it is on screen and under the user's finger. Scrolling it
+      // to the middle would move the list out from under them for no gain —
+      // `_followCurrentChannelIfVisible` exists because zapping with the
+      // buttons can walk the highlight off screen, which a tap cannot.
       _currentIndex = index;
       _currentChannel = _channels[index];
       _hasError = false;
@@ -835,6 +867,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                                               ? Colors.blue[300]
                                               : Colors.white,
                                           fontSize: 13,
+                                          // Pinned: see _channelRowExtent.
+                                          height: _channelRowLineHeight,
                                           fontWeight: isCurrent
                                               ? FontWeight.w600
                                               : FontWeight.normal,
@@ -846,6 +880,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                                         Text(
                                           channel.displayGroup!,
                                           style: const TextStyle(
+                                              // Pinned: see _channelRowExtent.
+                                              height: _channelRowLineHeight,
                                               color: Colors.white38,
                                               fontSize: 10),
                                           maxLines: 1,
