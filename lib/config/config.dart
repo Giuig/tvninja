@@ -170,14 +170,12 @@ class AppStatsNotifier extends ChangeNotifier {
   SortOption _sortOption = SortOption.recent;
   int _totalViews = 0;
   bool _isLoading = true;
-  String? _loadError;
 
   List<Channel>? _cachedFavoriteChannels;
 
   List<Playlist> get playlists => List.unmodifiable(_playlists);
   List<Channel> get allChannels => List.unmodifiable(_allChannels);
   bool get isLoading => _isLoading;
-  String? get loadError => _loadError;
   Set<String> get favoriteChannelIds => Set.from(_favoriteChannelIds);
   SortOption get sortOption => _sortOption;
 

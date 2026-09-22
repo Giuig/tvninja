@@ -114,14 +114,17 @@ class _CountrySelectPageState extends State<CountrySelectPage>
         channels: channels,
       );
       if (!mounted) return;
-      context.read<AppStatsNotifier>().addPlaylist(playlist);
+      final added =
+          await context.read<AppStatsNotifier>().addPlaylist(playlist);
       if (!mounted) return;
       Navigator.of(context).popUntil((route) => route.isFirst);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            AppLocalizations.of(context)!
-                .channelsLoadedForCountry(channels.length, name),
+            !added
+                ? AppLocalizations.of(context)!.playlistAlreadyAdded
+                : AppLocalizations.of(context)!
+                    .channelsLoadedForCountry(channels.length, name),
           ),
         ),
       );
