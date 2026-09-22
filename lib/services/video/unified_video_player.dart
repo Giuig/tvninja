@@ -388,18 +388,50 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     widget.onPositionChanged?.call(position);
   }
 
+  /// How long a stream that has **never started** may buffer before it is
+  /// called dead.
+  ///
+  /// 15s rather than something tighter on purpose: real streams are sometimes
+  /// genuinely slow to start, and the cost of being wrong is a user tapping
+  /// Retry on something that would have worked.
+  static const Duration _firstLoadTimeout = Duration(seconds: 15);
+
+  /// How long an **established** stream may rebuffer before reconnecting.
+  /// Unchanged; this is the value the watchdog always had.
+  static const Duration _rebufferTimeout = Duration(seconds: 20);
+
   void _handleEngineBuffering(bool buffering) {
     final changed = _isBuffering != buffering;
     _setBuffering(buffering);
     if (!changed) return;
     if (buffering) {
-      // Watchdog fires on every buffering start (initial load or mid-play reconnect)
       _bufferingWatchdog?.cancel();
-      _bufferingWatchdog = Timer(const Duration(seconds: 20), () {
-        if (mounted) {
-          _isReconnecting = true;
-          _reconnect.schedule();
+      // Two different situations, split on whether a frame was ever seen.
+      //
+      // A stream that **was** playing and stalls is worth recovering: that is
+      // a live channel blipping, and the reconnect chain (2/4/8/16/30s, five
+      // attempts) exists for exactly that.
+      //
+      // A stream that has **never started** is not worth retrying five times.
+      // Each attempt re-armed this same watchdog, so a dead stream took
+      // roughly 160 seconds to reach the error screen — a spinner for most of
+      // three minutes, with nothing to act on. Owner asked for a loading
+      // timeout (2026-09-22); this is it. Going straight to the give-up path
+      // reuses the existing error screen, which already carries a Retry
+      // button and already words itself differently for this case.
+      final firstLoad = !_hasStartedPlaying;
+      _bufferingWatchdog =
+          Timer(firstLoad ? _firstLoadTimeout : _rebufferTimeout, () {
+        if (!mounted) return;
+        // Re-checked rather than trusting the captured value: a stream can
+        // start and stall again inside the window.
+        if (!_hasStartedPlaying) {
+          _reconnect.cancel();
+          _handleReconnectGiveUp();
+          return;
         }
+        _isReconnecting = true;
+        _reconnect.schedule();
       });
     } else {
       _bufferingWatchdog?.cancel();

@@ -627,6 +627,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Browse'**
   String get browse;
+
+  /// No description provided for @playlistAlreadyAdded.
+  ///
+  /// In en, this message translates to:
+  /// **'That playlist is already added'**
+  String get playlistAlreadyAdded;
 }
 
 class _AppLocalizationsDelegate

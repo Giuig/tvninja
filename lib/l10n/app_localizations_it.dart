@@ -295,4 +295,7 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get browse => 'Sfoglia';
+
+  @override
+  String get playlistAlreadyAdded => 'That playlist is already added';
 }

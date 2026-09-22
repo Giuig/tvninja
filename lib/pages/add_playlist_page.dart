@@ -75,14 +75,23 @@ class _AddPlaylistPageState extends State<AddPlaylistPage>
         channels: channels,
       );
       if (!mounted) return;
-      context.read<AppStatsNotifier>().addPlaylist(playlist);
+      final added =
+          await context.read<AppStatsNotifier>().addPlaylist(playlist);
       if (!mounted) return;
-      Navigator.of(context).popUntil((route) => route.isFirst);
+      // Stay on the browser when it was a duplicate. Leaving the page is the
+      // reward for succeeding; being thrown back to the playlist list with a
+      // message is a worse way to learn you picked one you already have, and
+      // this tab's own failure path (below) already stays put.
+      if (added) {
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            AppLocalizations.of(context)!
-                .channelsLoadedForCountry(channels.length, name),
+            !added
+                ? AppLocalizations.of(context)!.playlistAlreadyAdded
+                : AppLocalizations.of(context)!
+                    .channelsLoadedForCountry(channels.length, name),
           ),
         ),
       );
@@ -174,13 +183,27 @@ class _AddPlaylistPageState extends State<AddPlaylistPage>
         channels:
             channels.map((c) => c.copyWith(playlistId: playlistId)).toList(),
       );
-      if (mounted) {
-        context.read<AppStatsNotifier>().addPlaylist(playlist);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l10n.channelsLoaded(channels.length))),
-        );
-        Navigator.pop(context);
+      // Guarded either side of the await, matching `_selectBrowseSource`.
+      // `addPlaylist` is async now, and this block already sits downstream of
+      // the parse above, so every `context` use needs a `mounted` check in
+      // front of it rather than behind it.
+      if (!mounted) return;
+      final added =
+          await context.read<AppStatsNotifier>().addPlaylist(playlist);
+      if (!mounted) return;
+      if (!added) {
+        // A duplicate is a fixable mistake, so it belongs on the field the
+        // user would edit to fix it — the same place a parse failure lands.
+        // Popping back to the playlist list and explaining there would make
+        // them navigate in again to change one character. `finally` still
+        // clears the progress flag on this path.
+        setState(() => _m3uError = l10n.playlistAlreadyAdded);
+        return;
       }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.channelsLoaded(channels.length))),
+      );
+      Navigator.pop(context);
     } catch (e) {
       if (mounted) setState(() => _m3uError = e.toString());
     } finally {
@@ -225,13 +248,27 @@ class _AddPlaylistPageState extends State<AddPlaylistPage>
         channels:
             channels.map((c) => c.copyWith(playlistId: playlistId)).toList(),
       );
-      if (mounted) {
-        context.read<AppStatsNotifier>().addPlaylist(playlist);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l10n.channelsLoaded(channels.length))),
-        );
-        Navigator.pop(context);
+      // Guarded either side of the await, matching `_selectBrowseSource`.
+      // `addPlaylist` is async now, and this block already sits downstream of
+      // the parse above, so every `context` use needs a `mounted` check in
+      // front of it rather than behind it.
+      if (!mounted) return;
+      final added =
+          await context.read<AppStatsNotifier>().addPlaylist(playlist);
+      if (!mounted) return;
+      if (!added) {
+        // A duplicate is a fixable mistake, so it belongs on the field the
+        // user would edit to fix it — the same place a parse failure lands.
+        // Popping back to the playlist list and explaining there would make
+        // them navigate in again to change one character. `finally` still
+        // clears the progress flag on this path.
+        setState(() => _xtreamError = l10n.playlistAlreadyAdded);
+        return;
       }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.channelsLoaded(channels.length))),
+      );
+      Navigator.pop(context);
     } catch (e) {
       if (mounted) setState(() => _xtreamError = e.toString());
     } finally {
