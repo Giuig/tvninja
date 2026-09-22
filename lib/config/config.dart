@@ -188,10 +188,30 @@ class AppStatsNotifier extends ChangeNotifier {
         .toList();
   }
 
+  /// Favourited channels, **one entry per stream**.
+  ///
+  /// The dedupe is the point, not an optimisation. `_allChannels` holds one
+  /// `Channel` per playlist *occurrence*, while a favourite is identified by
+  /// `uniqueId`, which is derived from the URL — so the same stream present in
+  /// two playlists produced two objects sharing one id and the favourites grid
+  /// listed it twice. Reported by the owner 2026-09-22.
+  ///
+  /// That is a consequence of the identity decision taken in 1.5.1 — a
+  /// favourite follows the stream, not the playlist entry — which stands. Only
+  /// the display was wrong.
+  ///
+  /// First occurrence wins: playlists are kept in insertion order, so the copy
+  /// shown is the one from the playlist added earliest, which is stable across
+  /// rebuilds rather than arbitrary.
   List<Channel> get favoriteChannels {
-    _cachedFavoriteChannels ??= _allChannels
-        .where((c) => _favoriteChannelIds.contains(c.uniqueId))
-        .toList();
+    if (_cachedFavoriteChannels == null) {
+      final seen = <String>{};
+      _cachedFavoriteChannels = [
+        for (final c in _allChannels)
+          if (_favoriteChannelIds.contains(c.uniqueId) && seen.add(c.uniqueId))
+            c,
+      ];
+    }
     return _cachedFavoriteChannels!;
   }
 
@@ -227,33 +247,30 @@ class AppStatsNotifier extends ChangeNotifier {
   }
 
   /// Seed playlist for a fresh **debug** install only — see the `kDebugMode`
-  /// guard in [_loadData]. A release build never fetches this.
+  /// guard in [_loadData]. A release build never seeds anything.
   ///
-  /// Points at iptv-org's own Italy list rather than a third party's mirror of
-  /// it: iptv-org is the upstream this app already sends people to for browsing
-  /// channels, it is maintained and rebuilt continuously, and its URL scheme
-  /// (`/countries/<code>.m3u`) is stable. The previous value was one
-  /// contributor's personal repo — fine while it lasted, but nothing guaranteed
-  /// it would keep existing, and a dead seed makes a fresh debug install look
-  /// like the parser is broken.
-  static const String defaultPlaylistUrl =
-      'https://iptv-org.github.io/iptv/countries/it.m3u';
-  static const String defaultPlaylistName = 'iptv-org IT (DEBUG)';
-
-  /// Last-resort seed when [defaultPlaylistUrl] cannot be fetched — **debug
-  /// only**, same `kDebugMode` guard as the seed itself.
+  /// These were the *fallback* until 2026-09-22, reached only when fetching a
+  /// real playlist failed. They are now the seed outright, at the owner's
+  /// request, and the fetch is gone. Purpose-built, long-lived HLS test assets
+  /// (Mux's and Apple's reference streams, and the Sintel demo) — deliberately
+  /// NOT real TV channels, so the name makes obvious you are looking at a
+  /// debug seed and not at content.
   ///
-  /// The iptv-org seed above fixed a *dead upstream*, but it still needs the
-  /// network: offline, behind a captive portal, or while iptv-org is down, a
-  /// fresh debug install used to end up with a playlist containing zero
-  /// channels — which looks exactly like the parser failing, the very thing
-  /// that seed was chosen to avoid.
+  /// Why this beats fetching iptv-org's country list, which is what used to be
+  /// here:
   ///
-  /// These three need no fetch and no M3U parse: they are purpose-built,
-  /// long-lived HLS test assets (Mux's and Apple's reference streams, and the
-  /// Sintel demo). They are deliberately NOT real TV channels — the name makes
-  /// it obvious you are looking at the offline fallback and not at content.
-  static const List<(String, String)> debugFallbackStreams = [
+  /// - **No network at startup.** A debug session cannot be shaped by the
+  ///   upstream being slow, or a stream being geo-blocked.
+  /// - **Three channels, not ~800.** The country list made every list and
+  ///   scroll observation noisy for no benefit.
+  /// - **They play.** Repeatedly, during device testing, real channels
+  ///   returned "stream unavailable" and cost time proving the app was fine.
+  ///
+  /// **What this gives up:** a fresh debug install no longer exercises
+  /// [M3UParser] end to end, which the old seed did incidentally. That is
+  /// covered by `test/m3u_parser_useragent_test.dart` and by adding any real
+  /// playlist by hand — but it is a real if small loss, not a free swap.
+  static const List<(String, String)> debugSeedStreams = [
     ('Mux Test Stream', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'),
     (
       'Apple BipBop',
@@ -265,8 +282,7 @@ class AppStatsNotifier extends ChangeNotifier {
     ),
   ];
 
-  static const String debugFallbackPlaylistName =
-      'Built-in test streams (DEBUG)';
+  static const String debugSeedPlaylistName = 'Built-in test streams (DEBUG)';
 
   Playlist _withChannelPlaylistId(Playlist playlist) {
     return playlist.copyWith(
@@ -313,34 +329,16 @@ class AppStatsNotifier extends ChangeNotifier {
     _migrateFavorites();
 
     if (_playlists.isEmpty && kDebugMode) {
-      try {
-        final channels = await M3UParser.parse(defaultPlaylistUrl);
-        final defaultId = 'default_italian';
-        _playlists.add(_withChannelPlaylistId(Playlist(
-          id: defaultId,
-          name: defaultPlaylistName,
-          url: defaultPlaylistUrl,
-          channels: channels,
-        )));
-        _loadError = null;
-      } catch (e) {
-        // Fall back to the built-in streams rather than an empty playlist.
-        // An entry with zero channels is indistinguishable from a broken
-        // parser, and leaves a fresh debug install with nothing to play.
-        debugPrint(
-            'Failed to load default playlist ($e) - seeding built-in test streams');
-        _loadError = 'Could not fetch $defaultPlaylistName ($e). '
-            'Using $debugFallbackPlaylistName instead.';
-        _playlists.add(_withChannelPlaylistId(Playlist(
-          id: 'debug_fallback_streams',
-          name: debugFallbackPlaylistName,
-          url: '',
-          channels: [
-            for (final (name, url) in debugFallbackStreams)
-              Channel(name: name, url: url, group: 'Test'),
-          ],
-        )));
-      }
+      // No fetch, no parse, no failure path — see [debugSeedStreams].
+      _playlists.add(_withChannelPlaylistId(Playlist(
+        id: 'debug_seed_streams',
+        name: debugSeedPlaylistName,
+        url: '',
+        channels: [
+          for (final (name, url) in debugSeedStreams)
+            Channel(name: name, url: url, group: 'Test'),
+        ],
+      )));
     }
 
     _buildAllChannelsList();
@@ -387,12 +385,48 @@ class AppStatsNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> addPlaylist(Playlist playlist) async {
+  /// Normalised form of a playlist URL, for duplicate detection only.
+  ///
+  /// Trim, lowercase, and drop a single trailing slash — nothing more.
+  /// Specifically **not** stripping the query string: Xtream URLs carry the
+  /// username and password there, so two entries differing only in query are
+  /// genuinely different playlists.
+  static String normalisePlaylistUrl(String url) {
+    var u = url.trim().toLowerCase();
+    if (u.endsWith('/')) u = u.substring(0, u.length - 1);
+    return u;
+  }
+
+  /// Whether a playlist with the same (normalised) URL is already added.
+  bool hasPlaylistWithUrl(String url) {
+    if (url.trim().isEmpty) return false;
+    final target = normalisePlaylistUrl(url);
+    return _playlists.any((p) => normalisePlaylistUrl(p.url) == target);
+  }
+
+  /// Adds [playlist], unless one with the same URL is already present.
+  ///
+  /// Returns false when it was rejected as a duplicate, so the caller can say
+  /// so. Deliberately **not** throwing: a duplicate is a normal thing for a
+  /// user to attempt, not an error condition.
+  ///
+  /// Matched on URL rather than name, on purpose. Two different sources can
+  /// legitimately carry the same name, while the same URL twice is never
+  /// intentional — and it used to duplicate every one of that playlist's
+  /// channels into `_allChannels`, which is what feeds the favourites grid.
+  /// Owner report, 2026-09-22: "i cna add same playlist twice with the same
+  /// name".
+  ///
+  /// An empty URL is never treated as a duplicate — the debug seed uses one,
+  /// and so would any future playlist that is not fetched from anywhere.
+  Future<bool> addPlaylist(Playlist playlist) async {
+    if (hasPlaylistWithUrl(playlist.url)) return false;
     _playlists.add(playlist);
     _buildAllChannelsList();
     _cachedFavoriteChannels = null;
     await _saveData();
     notifyListeners();
+    return true;
   }
 
   Future<void> removePlaylist(String id) async {

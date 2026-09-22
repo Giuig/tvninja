@@ -288,4 +288,7 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get browse => 'ブラウズ';
+
+  @override
+  String get playlistAlreadyAdded => 'That playlist is already added';
 }

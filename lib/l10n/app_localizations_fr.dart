@@ -294,4 +294,7 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String get browse => 'Parcourir';
+
+  @override
+  String get playlistAlreadyAdded => 'That playlist is already added';
 }

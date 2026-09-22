@@ -75,14 +75,17 @@ class _AddPlaylistPageState extends State<AddPlaylistPage>
         channels: channels,
       );
       if (!mounted) return;
-      context.read<AppStatsNotifier>().addPlaylist(playlist);
+      final added =
+          await context.read<AppStatsNotifier>().addPlaylist(playlist);
       if (!mounted) return;
       Navigator.of(context).popUntil((route) => route.isFirst);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            AppLocalizations.of(context)!
-                .channelsLoadedForCountry(channels.length, name),
+            !added
+                ? AppLocalizations.of(context)!.playlistAlreadyAdded
+                : AppLocalizations.of(context)!
+                    .channelsLoadedForCountry(channels.length, name),
           ),
         ),
       );
@@ -174,13 +177,22 @@ class _AddPlaylistPageState extends State<AddPlaylistPage>
         channels:
             channels.map((c) => c.copyWith(playlistId: playlistId)).toList(),
       );
-      if (mounted) {
-        context.read<AppStatsNotifier>().addPlaylist(playlist);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l10n.channelsLoaded(channels.length))),
-        );
-        Navigator.pop(context);
-      }
+      // Guarded either side of the await, matching `_selectBrowseSource`.
+      // `addPlaylist` is async now, and this block already sits downstream of
+      // the parse above, so every `context` use needs a `mounted` check in
+      // front of it rather than behind it.
+      if (!mounted) return;
+      final added =
+          await context.read<AppStatsNotifier>().addPlaylist(playlist);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(added
+              ? l10n.channelsLoaded(channels.length)
+              : l10n.playlistAlreadyAdded),
+        ),
+      );
+      Navigator.pop(context);
     } catch (e) {
       if (mounted) setState(() => _m3uError = e.toString());
     } finally {
@@ -225,13 +237,22 @@ class _AddPlaylistPageState extends State<AddPlaylistPage>
         channels:
             channels.map((c) => c.copyWith(playlistId: playlistId)).toList(),
       );
-      if (mounted) {
-        context.read<AppStatsNotifier>().addPlaylist(playlist);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l10n.channelsLoaded(channels.length))),
-        );
-        Navigator.pop(context);
-      }
+      // Guarded either side of the await, matching `_selectBrowseSource`.
+      // `addPlaylist` is async now, and this block already sits downstream of
+      // the parse above, so every `context` use needs a `mounted` check in
+      // front of it rather than behind it.
+      if (!mounted) return;
+      final added =
+          await context.read<AppStatsNotifier>().addPlaylist(playlist);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(added
+              ? l10n.channelsLoaded(channels.length)
+              : l10n.playlistAlreadyAdded),
+        ),
+      );
+      Navigator.pop(context);
     } catch (e) {
       if (mounted) setState(() => _xtreamError = e.toString());
     } finally {

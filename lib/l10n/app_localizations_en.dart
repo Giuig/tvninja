@@ -293,4 +293,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get browse => 'Browse';
+
+  @override
+  String get playlistAlreadyAdded => 'That playlist is already added';
 }
