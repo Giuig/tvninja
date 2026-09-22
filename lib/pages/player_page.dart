@@ -82,8 +82,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final scaler = MediaQuery.textScalerOf(context);
     // 13 for the name, 10 for the group line. Both lines always counted: the
     // group line is conditional, and the extent has to fit the tallest row.
-    final textHeight = scaler.scale(13 * _channelRowLineHeight) +
-        scaler.scale(10 * _channelRowLineHeight);
+    // Scale the font size first, then apply the multiplier — that is the order
+    // Flutter's paragraph layout uses, and doing it the other way round is only
+    // equivalent while the scaler is linear, which `TextScaler` does not
+    // promise. Same class of assumption as the bug this method exists to fix.
+    final textHeight = scaler.scale(13) * _channelRowLineHeight +
+        scaler.scale(10) * _channelRowLineHeight;
     // The logo box wins at normal text scale; the text wins once scaled up.
     const logoBox = 32.0;
     final content = textHeight < logoBox ? logoBox : textHeight;
