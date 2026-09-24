@@ -1,5 +1,7 @@
 # tvninja
 
+[![Release](https://img.shields.io/github/v/release/Giuig/tvninja)](https://github.com/Giuig/tvninja/releases/latest)
+
 IPTV / M3U8 player built with Flutter. Watch live TV channels on Android and in the browser with a persistent mini-player experience.
 
 
@@ -40,6 +42,7 @@ Get the latest APK from the [Releases page](https://github.com/Giuig/tvninja/rel
 ### Install via Obtainium
 
 Add `https://github.com/Giuig/tvninja` in [Obtainium](https://github.com/ImranR98/Obtainium) to receive automatic updates. Use the APK filter `tvninja-\d` to select the universal build.
+
 
 
 ## Support

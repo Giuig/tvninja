@@ -1,13 +1,15 @@
 slug: tvninja
 name: tvninja
 github: https://github.com/Giuig/tvninja
+badges:
+  - release
 description: >
   IPTV / M3U8 player built with Flutter. Watch live TV channels on Android and in the browser with a persistent mini-player experience.
 web_url: https://giuig.github.io/tvninja/
 web_note: Some streams may not work in the browser due to CORS restrictions.
 build_commands: |
   flutter pub get
-  flutter build apk --release
+  flutter build apk --release --split-per-abi --no-tree-shake-icons --split-debug-info=build/debug-info
   flutter build web --base-href=/tvninja/ --release
 features:
   - "**M3U8 Playlist Support** — load and play IPTV streams from M3U8 playlists"
