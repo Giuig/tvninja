@@ -359,7 +359,7 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(statusText)
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(R.drawable.ic_stat_tvninja)
             .setContentIntent(contentIntent)
             .addAction(toggleAction)
             .addAction(stopAction)
