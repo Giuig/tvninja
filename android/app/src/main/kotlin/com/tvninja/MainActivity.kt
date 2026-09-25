@@ -1,7 +1,9 @@
 package io.github.giuig.tvninja
 
+import android.Manifest
 import android.app.PictureInPictureParams
 import android.content.res.Configuration
+import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Rational
 import android.os.Bundle
@@ -54,6 +56,12 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
     }
 
     override fun onDestroy() {
