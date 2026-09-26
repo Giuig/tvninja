@@ -83,5 +83,12 @@
   "nextChannel": "Chaîne suivante",
   "closePlayer": "Fermer le lecteur",
   "expandPlayer": "Agrandir le lecteur",
-  "browse": "Parcourir"
+  "browse": "Parcourir",
+  "exitFullscreen": "Quitter le plein écran",
+  "fillScreen": "Remplir l'écran",
+  "fullscreen": "Plein écran",
+  "originalSize": "Taille d'origine",
+  "pause": "Pause",
+  "play": "Lecture",
+  "playlistAlreadyAdded": "Cette liste est déjà ajoutée"
 }

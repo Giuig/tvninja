@@ -83,5 +83,12 @@
   "nextChannel": "Nächster Kanal",
   "closePlayer": "Player schließen",
   "expandPlayer": "Player vergrößern",
-  "browse": "Durchsuchen"
+  "browse": "Durchsuchen",
+  "exitFullscreen": "Vollbild beenden",
+  "fillScreen": "Bildschirm füllen",
+  "fullscreen": "Vollbild",
+  "originalSize": "Originalgröße",
+  "pause": "Pause",
+  "play": "Abspielen",
+  "playlistAlreadyAdded": "Diese Wiedergabeliste wurde bereits hinzugefügt"
 }

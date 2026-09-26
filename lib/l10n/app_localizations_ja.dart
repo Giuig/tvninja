@@ -12,10 +12,10 @@ class AppLocalizationsJa extends AppLocalizations {
   String get loading => '読み込み中...';
 
   @override
-  String get fillScreen => 'Fill screen';
+  String get fillScreen => '画面に合わせる';
 
   @override
-  String get originalSize => 'Original size';
+  String get originalSize => '元のサイズ';
 
   @override
   String get welcomeToTvninja => 'TV Ninjaへようこそ！';
@@ -263,16 +263,16 @@ class AppLocalizationsJa extends AppLocalizations {
   String get switchToVideoDescription => '動画モードに戻る';
 
   @override
-  String get play => 'Play';
+  String get play => '再生';
 
   @override
-  String get pause => 'Pause';
+  String get pause => '一時停止';
 
   @override
-  String get fullscreen => 'Fullscreen';
+  String get fullscreen => '全画面';
 
   @override
-  String get exitFullscreen => 'Exit fullscreen';
+  String get exitFullscreen => '全画面を終了';
 
   @override
   String get previousChannel => '前のチャンネル';
@@ -290,5 +290,5 @@ class AppLocalizationsJa extends AppLocalizations {
   String get browse => 'ブラウズ';
 
   @override
-  String get playlistAlreadyAdded => 'That playlist is already added';
+  String get playlistAlreadyAdded => 'このプレイリストは既に追加されています';
 }

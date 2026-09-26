@@ -83,5 +83,12 @@
   "nextChannel": "Canale successivo",
   "closePlayer": "Chiudi player",
   "expandPlayer": "Espandi player",
-  "browse": "Sfoglia"
+  "browse": "Sfoglia",
+  "exitFullscreen": "Esci da schermo intero",
+  "fillScreen": "Riempi schermo",
+  "fullscreen": "Schermo intero",
+  "originalSize": "Dimensione originale",
+  "pause": "Pausa",
+  "play": "Riproduci",
+  "playlistAlreadyAdded": "Questa playlist è già stata aggiunta"
 }

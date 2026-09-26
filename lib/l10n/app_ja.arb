@@ -83,5 +83,12 @@
   "nextChannel": "次のチャンネル",
   "closePlayer": "プレーヤーを閉じる",
   "expandPlayer": "プレーヤーを拡大",
-  "browse": "ブラウズ"
+  "browse": "ブラウズ",
+  "exitFullscreen": "全画面を終了",
+  "fillScreen": "画面に合わせる",
+  "fullscreen": "全画面",
+  "originalSize": "元のサイズ",
+  "pause": "一時停止",
+  "play": "再生",
+  "playlistAlreadyAdded": "このプレイリストは既に追加されています"
 }

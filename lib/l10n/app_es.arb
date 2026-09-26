@@ -83,5 +83,12 @@
   "nextChannel": "Siguiente canal",
   "closePlayer": "Cerrar reproductor",
   "expandPlayer": "Expandir reproductor",
-  "browse": "Explorar"
+  "browse": "Explorar",
+  "exitFullscreen": "Salir de pantalla completa",
+  "fillScreen": "Llenar pantalla",
+  "fullscreen": "Pantalla completa",
+  "originalSize": "Tamaño original",
+  "pause": "Pausa",
+  "play": "Reproducir",
+  "playlistAlreadyAdded": "Esa lista ya está agregada"
 }
