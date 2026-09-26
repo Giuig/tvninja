@@ -157,9 +157,6 @@ class AppLocalizationsJa extends AppLocalizations {
   String get password => 'パスワード';
 
   @override
-  String get rename => '名前を変更';
-
-  @override
   String get copyUrl => 'URLをコピー';
 
   @override
@@ -167,9 +164,6 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get refresh => '更新';
-
-  @override
-  String get renamePlaylist => 'プレイリスト名を変更';
 
   @override
   String get nameLabel => '名前';
@@ -239,9 +233,6 @@ class AppLocalizationsJa extends AppLocalizations {
   String get playlistRefreshed => 'プレイリストを更新しました';
 
   @override
-  String get renamePlaylistHint => '新しい名前を入力';
-
-  @override
   String get deletePlaylistConfirmation => 'このプレイリストとすべてのチャンネルが完全に削除されます。';
 
   @override
@@ -291,4 +282,13 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get playlistAlreadyAdded => 'このプレイリストは既に追加されています';
+
+  @override
+  String get edit => '編集';
+
+  @override
+  String get editPlaylist => 'プレイリストを編集';
+
+  @override
+  String get save => '保存';
 }

@@ -47,11 +47,9 @@
   "portalUrl": "URL del portal",
   "username": "Usuario",
   "password": "Contraseña",
-  "rename": "Renombrar",
   "copyUrl": "Copiar URL",
   "urlCopied": "URL copiada al portapapeles",
   "refresh": "Actualizar",
-  "renamePlaylist": "Renombrar lista",
   "nameLabel": "Nombre",
   "noChannelsFound": "No se encontraron canales",
   "switchToVideo": "Cambiar a video",
@@ -71,7 +69,6 @@
   "loadingChannels": "{count, plural, one{Cargando {count} canal...} other{Cargando {count} canales...}}",
   "errorLoadingChannels": "Error al cargar canales: {error}",
   "playlistRefreshed": "Lista actualizada",
-  "renamePlaylistHint": "Ingresa nuevo nombre",
   "deletePlaylistConfirmation": "Esto eliminará permanentemente esta lista y todos sus canales.",
   "copied": "Copiado",
   "noInternet": "Sin conexión a internet",
@@ -90,5 +87,8 @@
   "originalSize": "Tamaño original",
   "pause": "Pausa",
   "play": "Reproducir",
-  "playlistAlreadyAdded": "Esa lista ya está agregada"
+  "playlistAlreadyAdded": "Esa lista ya está agregada",
+  "edit": "Editar",
+  "editPlaylist": "Editar lista",
+  "save": "Guardar"
 }

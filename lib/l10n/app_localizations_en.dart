@@ -178,9 +178,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get password => 'Password';
 
   @override
-  String get rename => 'Rename';
-
-  @override
   String get copyUrl => 'Copy URL';
 
   @override
@@ -188,9 +185,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get refresh => 'Refresh';
-
-  @override
-  String get renamePlaylist => 'Rename Playlist';
 
   @override
   String get nameLabel => 'Name';
@@ -273,9 +267,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get playlistRefreshed => 'Playlist refreshed';
 
   @override
-  String get renamePlaylistHint => 'Enter new name';
-
-  @override
   String get deletePlaylistConfirmation =>
       'This will permanently delete this playlist and all its channels.';
 
@@ -326,4 +317,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get playlistAlreadyAdded => 'That playlist is already added';
+
+  @override
+  String get edit => 'Edit';
+
+  @override
+  String get editPlaylist => 'Edit Playlist';
+
+  @override
+  String get save => 'Save';
 }

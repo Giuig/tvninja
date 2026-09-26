@@ -47,11 +47,9 @@
   "portalUrl": "Portal-URL",
   "username": "Benutzername",
   "password": "Passwort",
-  "rename": "Umbenennen",
   "copyUrl": "URL kopieren",
   "urlCopied": "URL in Zwischenablage kopiert",
   "refresh": "Aktualisieren",
-  "renamePlaylist": "Wiedergabeliste umbenennen",
   "nameLabel": "Name",
   "noChannelsFound": "Keine Kanäle gefunden",
   "switchToVideo": "Zu Video wechseln",
@@ -71,7 +69,6 @@
   "loadingChannels": "{count, plural, one{{count} Kanal wird geladen...} other{{count} Kanäle werden geladen...}}",
   "errorLoadingChannels": "Fehler beim Laden der Kanäle: {error}",
   "playlistRefreshed": "Wiedergabeliste aktualisiert",
-  "renamePlaylistHint": "Neuen Namen eingeben",
   "deletePlaylistConfirmation": "Dauerhaft löschen? Alle Kanäle gehen verloren.",
   "copied": "Kopiert",
   "noInternet": "Keine Internetverbindung",
@@ -90,5 +87,8 @@
   "originalSize": "Originalgröße",
   "pause": "Pause",
   "play": "Abspielen",
-  "playlistAlreadyAdded": "Diese Wiedergabeliste wurde bereits hinzugefügt"
+  "playlistAlreadyAdded": "Diese Wiedergabeliste wurde bereits hinzugefügt",
+  "edit": "Bearbeiten",
+  "editPlaylist": "Wiedergabeliste bearbeiten",
+  "save": "Speichern"
 }

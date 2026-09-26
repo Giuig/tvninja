@@ -70,11 +70,9 @@
   "portalUrl": "Portal URL",
   "username": "Username",
   "password": "Password",
-  "rename": "Rename",
   "copyUrl": "Copy URL",
   "urlCopied": "URL copied to clipboard",
   "refresh": "Refresh",
-  "renamePlaylist": "Rename Playlist",
   "nameLabel": "Name",
   "noChannelsFound": "No channels found",
   "switchToVideo": "Switch to Video",
@@ -135,7 +133,6 @@
     }
   },
   "playlistRefreshed": "Playlist refreshed",
-  "renamePlaylistHint": "Enter new name",
   "deletePlaylistConfirmation": "This will permanently delete this playlist and all its channels.",
   "copied": "Copied",
   "noInternet": "No internet connection",
@@ -152,5 +149,8 @@
   "closePlayer": "Close player",
   "expandPlayer": "Expand player",
   "browse": "Browse",
-  "playlistAlreadyAdded": "That playlist is already added"
+  "playlistAlreadyAdded": "That playlist is already added",
+  "edit": "Edit",
+  "editPlaylist": "Edit Playlist",
+  "save": "Save"
 }

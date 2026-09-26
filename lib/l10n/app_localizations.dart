@@ -382,12 +382,6 @@ abstract class AppLocalizations {
   /// **'Password'**
   String get password;
 
-  /// No description provided for @rename.
-  ///
-  /// In en, this message translates to:
-  /// **'Rename'**
-  String get rename;
-
   /// No description provided for @copyUrl.
   ///
   /// In en, this message translates to:
@@ -405,12 +399,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Refresh'**
   String get refresh;
-
-  /// No description provided for @renamePlaylist.
-  ///
-  /// In en, this message translates to:
-  /// **'Rename Playlist'**
-  String get renamePlaylist;
 
   /// No description provided for @nameLabel.
   ///
@@ -526,12 +514,6 @@ abstract class AppLocalizations {
   /// **'Playlist refreshed'**
   String get playlistRefreshed;
 
-  /// No description provided for @renamePlaylistHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Enter new name'**
-  String get renamePlaylistHint;
-
   /// No description provided for @deletePlaylistConfirmation.
   ///
   /// In en, this message translates to:
@@ -633,6 +615,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'That playlist is already added'**
   String get playlistAlreadyAdded;
+
+  /// No description provided for @edit.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit'**
+  String get edit;
+
+  /// No description provided for @editPlaylist.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit Playlist'**
+  String get editPlaylist;
+
+  /// No description provided for @save.
+  ///
+  /// In en, this message translates to:
+  /// **'Save'**
+  String get save;
 }
 
 class _AppLocalizationsDelegate

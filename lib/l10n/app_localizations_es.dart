@@ -177,9 +177,6 @@ class AppLocalizationsEs extends AppLocalizations {
   String get password => 'Contraseña';
 
   @override
-  String get rename => 'Renombrar';
-
-  @override
   String get copyUrl => 'Copiar URL';
 
   @override
@@ -187,9 +184,6 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get refresh => 'Actualizar';
-
-  @override
-  String get renamePlaylist => 'Renombrar lista';
 
   @override
   String get nameLabel => 'Nombre';
@@ -272,9 +266,6 @@ class AppLocalizationsEs extends AppLocalizations {
   String get playlistRefreshed => 'Lista actualizada';
 
   @override
-  String get renamePlaylistHint => 'Ingresa nuevo nombre';
-
-  @override
   String get deletePlaylistConfirmation =>
       'Esto eliminará permanentemente esta lista y todos sus canales.';
 
@@ -325,4 +316,13 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get playlistAlreadyAdded => 'Esa lista ya está agregada';
+
+  @override
+  String get edit => 'Editar';
+
+  @override
+  String get editPlaylist => 'Editar lista';
+
+  @override
+  String get save => 'Guardar';
 }

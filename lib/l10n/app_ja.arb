@@ -47,11 +47,9 @@
   "portalUrl": "ポータルURL",
   "username": "ユーザー名",
   "password": "パスワード",
-  "rename": "名前を変更",
   "copyUrl": "URLをコピー",
   "urlCopied": "URLをクリップボードにコピーしました",
   "refresh": "更新",
-  "renamePlaylist": "プレイリスト名を変更",
   "nameLabel": "名前",
   "noChannelsFound": "チャンネルが見つかりません",
   "switchToVideo": "動画に切り替え",
@@ -71,7 +69,6 @@
   "loadingChannels": "{count}チャンネルを読み込み中...",
   "errorLoadingChannels": "チャンネル読み込みエラー: {error}",
   "playlistRefreshed": "プレイリストを更新しました",
-  "renamePlaylistHint": "新しい名前を入力",
   "deletePlaylistConfirmation": "このプレイリストとすべてのチャンネルが完全に削除されます。",
   "copied": "コピーしました",
   "noInternet": "インターネット接続がありません",
@@ -90,5 +87,8 @@
   "originalSize": "元のサイズ",
   "pause": "一時停止",
   "play": "再生",
-  "playlistAlreadyAdded": "このプレイリストは既に追加されています"
+  "playlistAlreadyAdded": "このプレイリストは既に追加されています",
+  "edit": "編集",
+  "editPlaylist": "プレイリストを編集",
+  "save": "保存"
 }

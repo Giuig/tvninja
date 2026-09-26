@@ -5,6 +5,7 @@ import 'package:tvninja/config/config.dart';
 import 'package:tvninja/l10n/app_localizations.dart';
 import 'package:tvninja/pages/add_playlist_page.dart';
 import 'package:tvninja/pages/channel_list_page.dart';
+import 'package:tvninja/pages/edit_playlist_page.dart';
 import 'package:tvninja/services/m3u_parser.dart';
 import 'package:tvninja/services/xtream_parser.dart';
 
@@ -46,10 +47,10 @@ class _PlaylistPageState extends State<PlaylistPage> {
           children: [
             ListTile(
               leading: const Icon(Icons.edit),
-              title: Text(AppLocalizations.of(context)!.rename),
+              title: Text(AppLocalizations.of(context)!.edit),
               onTap: () {
                 Navigator.pop(context);
-                _showRenameDialog(playlist);
+                _showEditPage(playlist);
               },
             ),
             ListTile(
@@ -87,35 +88,11 @@ class _PlaylistPageState extends State<PlaylistPage> {
     );
   }
 
-  void _showRenameDialog(Playlist playlist) {
-    final controller = TextEditingController(text: playlist.name);
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(AppLocalizations.of(context)!.renamePlaylist),
-        content: TextField(
-            controller: controller,
-            decoration: InputDecoration(
-                labelText: AppLocalizations.of(context)!.nameLabel)),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: Text(AppLocalizations.of(context)!.cancel)),
-          TextButton(
-            onPressed: () {
-              final name = controller.text.trim();
-              if (name.isNotEmpty) {
-                context
-                    .read<AppStatsNotifier>()
-                    .renamePlaylist(playlist.id, name);
-                Navigator.pop(ctx);
-              }
-            },
-            child: Text(AppLocalizations.of(context)!.add),
-          ),
-        ],
-      ),
-    );
+  void _showEditPage(Playlist playlist) {
+    // Root navigator, for the same reason as `_showAddDialog`: a full-page
+    // form, not part of this tab's back stack.
+    Navigator.of(context, rootNavigator: true).push(MaterialPageRoute(
+        builder: (_) => EditPlaylistPage(playlist: playlist)));
   }
 
   Future<void> _refreshPlaylist(Playlist playlist) async {

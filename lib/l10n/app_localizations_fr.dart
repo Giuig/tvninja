@@ -178,9 +178,6 @@ class AppLocalizationsFr extends AppLocalizations {
   String get password => 'Mot de passe';
 
   @override
-  String get rename => 'Renommer';
-
-  @override
   String get copyUrl => 'Copier l\'URL';
 
   @override
@@ -188,9 +185,6 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String get refresh => 'Actualiser';
-
-  @override
-  String get renamePlaylist => 'Renommer la liste';
 
   @override
   String get nameLabel => 'Nom';
@@ -273,9 +267,6 @@ class AppLocalizationsFr extends AppLocalizations {
   String get playlistRefreshed => 'Liste actualisée';
 
   @override
-  String get renamePlaylistHint => 'Entrez le nouveau nom';
-
-  @override
   String get deletePlaylistConfirmation =>
       'Cela supprimera définitivement cette liste et toutes ses chaînes.';
 
@@ -327,4 +318,13 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String get playlistAlreadyAdded => 'Cette liste est déjà ajoutée';
+
+  @override
+  String get edit => 'Modifier';
+
+  @override
+  String get editPlaylist => 'Modifier la liste';
+
+  @override
+  String get save => 'Enregistrer';
 }
