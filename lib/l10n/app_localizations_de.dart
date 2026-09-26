@@ -56,8 +56,14 @@ class AppLocalizationsDe extends AppLocalizations {
   String get fillAllFields => 'Bitte füllen Sie alle Felder aus';
 
   @override
-  String playlistAdded(Object count) {
-    return 'Wiedergabeliste mit $count Kanälen hinzugefügt';
+  String playlistAdded(num count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Wiedergabeliste mit $count Kanälen hinzugefügt',
+      one: 'Wiedergabeliste mit $count Kanal hinzugefügt',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -102,7 +108,13 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String nChannels(int count) {
-    return '$count Kanäle';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count Kanäle',
+      one: '$count Kanal',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -130,8 +142,14 @@ class AppLocalizationsDe extends AppLocalizations {
       'Ungültige URL. Bitte geben Sie eine gültige HTTP/HTTPS-URL ein.';
 
   @override
-  String channelsLoaded(Object count) {
-    return '$count Kanäle geladen';
+  String channelsLoaded(num count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count Kanäle geladen',
+      one: '$count Kanal geladen',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -205,7 +223,13 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String channelsLoadedForCountry(int count, String country) {
-    return '$count Kanäle für $country geladen';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count Kanäle für $country geladen',
+      one: '$count Kanal für $country geladen',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -232,7 +256,13 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String loadingChannels(int count) {
-    return '$count Kanäle werden geladen...';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count Kanäle werden geladen...',
+      one: '$count Kanal wird geladen...',
+    );
+    return '$_temp0';
   }
 
   @override

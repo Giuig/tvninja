@@ -199,8 +199,8 @@ abstract class AppLocalizations {
   /// No description provided for @playlistAdded.
   ///
   /// In en, this message translates to:
-  /// **'Playlist added with {count} channels'**
-  String playlistAdded(Object count);
+  /// **'{count, plural, one{Playlist added with {count} channel} other{Playlist added with {count} channels}}'**
+  String playlistAdded(num count);
 
   /// No description provided for @noPlaylists.
   ///
@@ -283,7 +283,7 @@ abstract class AppLocalizations {
   /// No description provided for @nChannels.
   ///
   /// In en, this message translates to:
-  /// **'{count} channels'**
+  /// **'{count, plural, one{{count} channel} other{{count} channels}}'**
   String nChannels(int count);
 
   /// No description provided for @loadingStream.
@@ -331,8 +331,8 @@ abstract class AppLocalizations {
   /// No description provided for @channelsLoaded.
   ///
   /// In en, this message translates to:
-  /// **'{count} channels loaded'**
-  String channelsLoaded(Object count);
+  /// **'{count, plural, one{{count} channel loaded} other{{count} channels loaded}}'**
+  String channelsLoaded(num count);
 
   /// No description provided for @error.
   ///
@@ -469,7 +469,7 @@ abstract class AppLocalizations {
   /// No description provided for @channelsLoadedForCountry.
   ///
   /// In en, this message translates to:
-  /// **'{count} channels loaded for {country}'**
+  /// **'{count, plural, one{{count} channel loaded for {country}} other{{count} channels loaded for {country}}}'**
   String channelsLoadedForCountry(int count, String country);
 
   /// No description provided for @failedToLoadCountry.
@@ -511,7 +511,7 @@ abstract class AppLocalizations {
   /// No description provided for @loadingChannels.
   ///
   /// In en, this message translates to:
-  /// **'Loading {count} channels...'**
+  /// **'{count, plural, one{Loading {count} channel...} other{Loading {count} channels...}}'**
   String loadingChannels(int count);
 
   /// No description provided for @errorLoadingChannels.

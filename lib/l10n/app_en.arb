@@ -15,7 +15,7 @@
   "playlistName": "Playlist Name",
   "playlistUrl": "Playlist URL (M3U8)",
   "fillAllFields": "Please fill in all fields",
-  "playlistAdded": "Playlist added with {count} channels",
+  "playlistAdded": "{count, plural, one{Playlist added with {count} channel} other{Playlist added with {count} channels}}",
   "noPlaylists": "No playlists yet",
   "addFirstPlaylist": "Tap + to add your first M3U8 playlist",
   "deletePlaylist": "Delete Playlist",
@@ -29,7 +29,7 @@
   "noFavorites": "No favorites yet",
   "addFavoritesHint": "Tap the heart icon on any channel to add it to your favorites",
   "searchChannels": "Search channels...",
-  "nChannels": "{count} channels",
+  "nChannels": "{count, plural, one{{count} channel} other{{count} channels}}",
   "@nChannels": {
     "placeholders": {
       "count": {
@@ -51,7 +51,7 @@
   },
   "remove": "Remove",
   "invalidUrl": "Invalid URL. Please enter a valid HTTP/HTTPS URL.",
-  "channelsLoaded": "{count} channels loaded",
+  "channelsLoaded": "{count, plural, one{{count} channel loaded} other{{count} channels loaded}}",
   "error": "Error: {message}",
   "@error": {
     "placeholders": {
@@ -84,7 +84,7 @@
   "notificationControlsHint": "Use notification controls to play/pause",
   "failedToLoadStream": "Failed to load stream",
   "retry": "Retry",
-  "channelsLoadedForCountry": "{count} channels loaded for {country}",
+  "channelsLoadedForCountry": "{count, plural, one{{count} channel loaded for {country}} other{{count} channels loaded for {country}}}",
   "@channelsLoadedForCountry": {
     "placeholders": {
       "count": {
@@ -118,7 +118,7 @@
   "switchingToAudio": "Switching to audio...",
   "failedToLoad": "Failed to load",
   "videoNotAvailable": "Video not available",
-  "loadingChannels": "Loading {count} channels...",
+  "loadingChannels": "{count, plural, one{Loading {count} channel...} other{Loading {count} channels...}}",
   "@loadingChannels": {
     "placeholders": {
       "count": {

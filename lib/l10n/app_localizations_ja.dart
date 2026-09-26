@@ -54,7 +54,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get fillAllFields => 'すべての項目を入力してください';
 
   @override
-  String playlistAdded(Object count) {
+  String playlistAdded(num count) {
     return '$countチャンネルのプレイリストを追加';
   }
 
@@ -126,7 +126,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get invalidUrl => '無効なURLです。有効なHTTP/HTTPS URLを入力してください。';
 
   @override
-  String channelsLoaded(Object count) {
+  String channelsLoaded(num count) {
     return '$countチャンネル読み込み完了';
   }
 

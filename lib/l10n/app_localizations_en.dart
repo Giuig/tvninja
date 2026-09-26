@@ -55,8 +55,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get fillAllFields => 'Please fill in all fields';
 
   @override
-  String playlistAdded(Object count) {
-    return 'Playlist added with $count channels';
+  String playlistAdded(num count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Playlist added with $count channels',
+      one: 'Playlist added with $count channel',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -102,7 +108,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String nChannels(int count) {
-    return '$count channels';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count channels',
+      one: '$count channel',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -129,8 +141,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get invalidUrl => 'Invalid URL. Please enter a valid HTTP/HTTPS URL.';
 
   @override
-  String channelsLoaded(Object count) {
-    return '$count channels loaded';
+  String channelsLoaded(num count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count channels loaded',
+      one: '$count channel loaded',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -204,7 +222,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String channelsLoadedForCountry(int count, String country) {
-    return '$count channels loaded for $country';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count channels loaded for $country',
+      one: '$count channel loaded for $country',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -231,7 +255,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String loadingChannels(int count) {
-    return 'Loading $count channels...';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Loading $count channels...',
+      one: 'Loading $count channel...',
+    );
+    return '$_temp0';
   }
 
   @override

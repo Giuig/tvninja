@@ -55,8 +55,14 @@ class AppLocalizationsFr extends AppLocalizations {
   String get fillAllFields => 'Remplissez tous les champs';
 
   @override
-  String playlistAdded(Object count) {
-    return 'Liste avec $count chaînes ajoutée';
+  String playlistAdded(num count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Liste avec $count chaînes ajoutée',
+      one: 'Liste avec $count chaîne ajoutée',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -102,7 +108,13 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String nChannels(int count) {
-    return '$count chaînes';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count chaînes',
+      one: '$count chaîne',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -129,8 +141,14 @@ class AppLocalizationsFr extends AppLocalizations {
   String get invalidUrl => 'URL invalide. Entrez une URL HTTP/HTTPS valide.';
 
   @override
-  String channelsLoaded(Object count) {
-    return '$count chaînes chargées';
+  String channelsLoaded(num count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count chaînes chargées',
+      one: '$count chaîne chargée',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -204,7 +222,13 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String channelsLoadedForCountry(int count, String country) {
-    return '$count chaînes chargées pour $country';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count chaînes chargées pour $country',
+      one: '$count chaîne chargée pour $country',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -231,7 +255,13 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String loadingChannels(int count) {
-    return 'Chargement de $count chaînes...';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Chargement de $count chaînes...',
+      one: 'Chargement de $count chaîne...',
+    );
+    return '$_temp0';
   }
 
   @override

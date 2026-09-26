@@ -55,8 +55,14 @@ class AppLocalizationsEs extends AppLocalizations {
   String get fillAllFields => 'Completa todos los campos';
 
   @override
-  String playlistAdded(Object count) {
-    return 'Lista con $count canales agregada';
+  String playlistAdded(num count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Lista con $count canales agregada',
+      one: 'Lista con $count canal agregada',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -101,7 +107,13 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String nChannels(int count) {
-    return '$count canales';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count canales',
+      one: '$count canal',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -128,8 +140,14 @@ class AppLocalizationsEs extends AppLocalizations {
   String get invalidUrl => 'URL inválida. Ingresa una URL HTTP/HTTPS válida.';
 
   @override
-  String channelsLoaded(Object count) {
-    return '$count canales cargados';
+  String channelsLoaded(num count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count canales cargados',
+      one: '$count canal cargado',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -203,7 +221,13 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String channelsLoadedForCountry(int count, String country) {
-    return '$count canales cargados para $country';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count canales cargados para $country',
+      one: '$count canal cargado para $country',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -230,7 +254,13 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String loadingChannels(int count) {
-    return 'Cargando $count canales...';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Cargando $count canales...',
+      one: 'Cargando $count canal...',
+    );
+    return '$_temp0';
   }
 
   @override
