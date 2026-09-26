@@ -998,7 +998,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: ChannelLogo(
-                  url: _proxyImageUrl(_currentChannel.logo),
+                  // Raw URL: ChannelLogo proxies on web itself now.
+                  url: _currentChannel.logo,
                   fit: BoxFit.contain,
                   fallbackBuilder: (_) => Container(
                     color: Colors.white24,
@@ -1506,14 +1507,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     );
 
     return videoPlayer;
-  }
-
-  String _proxyImageUrl(String? url) {
-    if (url == null || url.isEmpty) return '';
-    if (kIsWeb) {
-      return 'https://images.weserv.nl/?url=${Uri.encodeComponent(url)}&w=200&h=200&fit=contain';
-    }
-    return url;
   }
 
   // COUPLING NOTE: this string-matches the *output* of
