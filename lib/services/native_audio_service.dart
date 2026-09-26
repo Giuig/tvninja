@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:tvninja/services/mpv_options.dart';
+import 'package:tvninja/services/video/stream_diagnostics.dart';
 
 class _CancellationException implements Exception {}
 
@@ -24,12 +25,28 @@ class NativeAudioService {
   static final _controlController =
       StreamController<PlaybackControl>.broadcast();
   static final _bufferingController = StreamController<bool>.broadcast();
+  static final _errorController = StreamController<String>.broadcast();
 
   static Stream<PlaybackState> get playbackStateStream =>
       _playbackStateController.stream;
   static Stream<TrackMetadata> get metadataStream => _metadataController.stream;
   static Stream<PlaybackControl> get controlStream => _controlController.stream;
   static Stream<bool> get bufferingStream => _bufferingController.stream;
+
+  /// A playback failure the user should see, worded like the video path's
+  /// (see [StreamDiagnostics.userMessage]). Emitted once per failure, when
+  /// the service has stopped trying — never for a drop it is still
+  /// reconnecting from.
+  static Stream<String> get errorStream => _errorController.stream;
+
+  /// The last message sent on [errorStream], cleared by every [play].
+  ///
+  /// Exists because the page only listens while its audio mode is active, and
+  /// that flag is set *after* [play] returns — so a failure can land before
+  /// anyone is listening for it. The page re-reads this after [play], the same
+  /// way it re-reads [isBuffering].
+  static String? get lastError => _lastError;
+  static String? _lastError;
 
   static bool _isInitialized = false;
   static bool _isBackgroundMode = false;
@@ -129,32 +146,71 @@ class NativeAudioService {
         _playbackStateController.add(_currentState);
         _bufferingController.add(true);
       }
-      if (_isBackgroundMode && _currentUrl != null) {
-        _scheduleReconnect();
-      }
+      final url = _currentUrl;
+      if (url != null) unawaited(_handleStreamError(url));
     });
+  }
+
+  /// Decides whether a failed stream is worth reconnecting to.
+  ///
+  /// mpv reports a dead URL and a dropped connection the same way ("Failed to
+  /// open ..."), so this used to treat every error as a drop: buffering, then
+  /// up to five reconnects over about a minute, then a silent stop. For a 404
+  /// that meant a minute of "Loading stream..." and no reason given — and when
+  /// the error arrived before background mode was on, no reconnect was
+  /// scheduled at all, so the spinner never stopped. Asking the server first
+  /// (same probe the video path uses) tells the two apart.
+  static Future<void> _handleStreamError(String url) async {
+    final requestId = _playRequestId;
+    final probe = await StreamDiagnostics.probe(url, null);
+    // Superseded while probing: a zap or a stop. This result describes a
+    // stream nobody is waiting on any more.
+    if (requestId != _playRequestId || url != _currentUrl) return;
+
+    if (StreamDiagnostics.isPermanent(probe)) {
+      _surfaceError(StreamDiagnostics.userMessage(probe)!);
+    } else if (_isBackgroundMode) {
+      _scheduleReconnect();
+    } else {
+      // Nothing would retry from here, so staying on "buffering" is the bug.
+      _surfaceError(StreamDiagnostics.userMessage(probe) ??
+          'Stream not responding — no data received');
+    }
+  }
+
+  /// Stops trying and tells the page why. Leaves the service in a terminal,
+  /// non-buffering state; [play] starts over from it.
+  static void _surfaceError(String message) {
+    debugPrint('[Audio] Giving up: $message');
+    _reconnectTimer?.cancel();
+    _reconnectAttempts = 0;
+    // Forget the URL so a Retry of the same channel is not skipped by the
+    // same-URL guard at the top of [play].
+    _currentUrl = null;
+    _isBuffering = false;
+    _currentState = _currentState.copyWith(
+      state: PlayerState.ended,
+      isPlaying: false,
+    );
+    _playbackStateController.add(_currentState);
+    _bufferingController.add(false);
+    if (_isBackgroundMode) {
+      _channel.invokeMethod('updatePlaybackState', {
+        'isPlaying': false,
+        'isBuffering': false,
+        'title': _currentState.metadata?.title ?? 'TV Ninja',
+      });
+    }
+    _lastError = message;
+    _errorController.add(message);
   }
 
   static void _scheduleReconnect() {
     _reconnectTimer?.cancel();
     if (_reconnectAttempts >= 5) {
       debugPrint('[Audio] Max reconnect attempts reached, giving up');
-      _reconnectAttempts = 0;
-      // Emit a terminal stopped state so UI doesn't stay frozen on "buffering"
-      _isBuffering = false;
-      _currentState = _currentState.copyWith(
-        state: PlayerState.ended,
-        isPlaying: false,
-      );
-      _playbackStateController.add(_currentState);
-      _bufferingController.add(false);
-      if (_isBackgroundMode) {
-        _channel.invokeMethod('updatePlaybackState', {
-          'isPlaying': false,
-          'isBuffering': false,
-          'title': _currentState.metadata?.title ?? 'TV Ninja',
-        });
-      }
+      // Same wording the video path uses when its reconnects give up.
+      _surfaceError('Stream lost — connection timed out');
       return;
     }
     final delaySeconds = min(30, 2 * (1 << _reconnectAttempts)); // 2,4,8,16,30
@@ -222,6 +278,7 @@ class NativeAudioService {
     }
 
     final requestId = ++_playRequestId;
+    _lastError = null;
     debugPrint('[Audio] Starting playback $requestId: $url');
     debugPrint('[Audio] Title: $title');
 
