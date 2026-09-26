@@ -59,6 +59,15 @@ class NativeAudioService {
   static int _playRequestId = 0;
   static Completer<void>? _playCanceller;
 
+  /// Set by [_surfaceError], cleared by [play]: the current stream failed and
+  /// the service stopped trying.
+  ///
+  /// A flag rather than clearing [_currentUrl], which is what this first did.
+  /// The home page and channel list read [currentUrl] to decide whether a
+  /// leftover audio session needs [stop] before opening another channel, so a
+  /// null URL there leaked the foreground service and its notification.
+  static bool _gaveUp = false;
+
   static late Player _audioPlayer;
 
   static PlaybackState get currentState => _currentState;
@@ -161,11 +170,14 @@ class NativeAudioService {
   /// scheduled at all, so the spinner never stopped. Asking the server first
   /// (same probe the video path uses) tells the two apart.
   static Future<void> _handleStreamError(String url) async {
+    // Already reported: a further error event from the same failed stream must
+    // not start reconnecting again.
+    if (_gaveUp) return;
     final requestId = _playRequestId;
     final probe = await StreamDiagnostics.probe(url, null);
     // Superseded while probing: a zap or a stop. This result describes a
     // stream nobody is waiting on any more.
-    if (requestId != _playRequestId || url != _currentUrl) return;
+    if (requestId != _playRequestId || url != _currentUrl || _gaveUp) return;
 
     if (StreamDiagnostics.isPermanent(probe)) {
       _surfaceError(StreamDiagnostics.userMessage(probe)!);
@@ -184,9 +196,9 @@ class NativeAudioService {
     debugPrint('[Audio] Giving up: $message');
     _reconnectTimer?.cancel();
     _reconnectAttempts = 0;
-    // Forget the URL so a Retry of the same channel is not skipped by the
-    // same-URL guard at the top of [play].
-    _currentUrl = null;
+    // Lets a Retry of the same channel past the same-URL guard at the top of
+    // [play]. [_currentUrl] stays set on purpose — see [_gaveUp].
+    _gaveUp = true;
     _isBuffering = false;
     _currentState = _currentState.copyWith(
       state: PlayerState.ended,
@@ -217,7 +229,7 @@ class NativeAudioService {
     debugPrint(
         '[Audio] Reconnecting in ${delaySeconds}s (attempt ${_reconnectAttempts + 1}/5)');
     _reconnectTimer = Timer(Duration(seconds: delaySeconds), () async {
-      if (!_isBackgroundMode || _currentUrl == null) return;
+      if (!_isBackgroundMode || _currentUrl == null || _gaveUp) return;
       _reconnectAttempts++;
       try {
         // Emit buffering state so the UI reflects the reconnect attempt
@@ -270,6 +282,7 @@ class NativeAudioService {
     // Guard with _isInitialized to avoid LateInitializationError when
     // play() is called before initialize() (lazy-init path).
     if (_isInitialized &&
+        !_gaveUp &&
         url == _currentUrl &&
         (_audioPlayer.state.playing || _audioPlayer.state.buffering)) {
       debugPrint(
@@ -279,6 +292,7 @@ class NativeAudioService {
 
     final requestId = ++_playRequestId;
     _lastError = null;
+    _gaveUp = false;
     debugPrint('[Audio] Starting playback $requestId: $url');
     debugPrint('[Audio] Title: $title');
 
@@ -422,6 +436,7 @@ class NativeAudioService {
 
       _isBackgroundMode = false;
       _currentUrl = null;
+      _gaveUp = false;
       _reconnectAttempts = 0;
       _reconnectTimer?.cancel();
       _reconnectTimer = null;
@@ -481,6 +496,7 @@ class NativeAudioService {
     _audioPlayer = Player();
     _currentState = PlaybackState();
     _isBuffering = false;
+    _gaveUp = false;
     _isInitialized = false;
     _playCanceller?.complete();
     _playCanceller = null;
