@@ -600,16 +600,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   Future<void> _surfaceError(String fallback) async {
     final generation = _loadGeneration;
     final probe = await StreamDiagnostics.probe(widget.url, _httpHeaders);
-    final msg = switch (probe) {
-      StreamProbeResult.notFound => 'Stream not found (404)',
-      StreamProbeResult.forbidden => 'Access denied (403)',
-      StreamProbeResult.unauthorized => 'Authentication required (401)',
-      StreamProbeResult.networkError => 'Network error — check your connection',
-      StreamProbeResult.serverError ||
-      StreamProbeResult.ok ||
-      StreamProbeResult.unknown =>
-        fallback,
-    };
+    final msg = StreamDiagnostics.userMessage(probe) ?? fallback;
     // Superseded while probing (a zap, a retry, a fresh load) — this result
     // describes a load nobody is waiting on any more. Reporting it here would
     // overwrite whatever replaced it, including a stream that is playing fine.

@@ -120,6 +120,33 @@ class StreamDiagnostics {
     return response.statusCode;
   }
 
+  /// The user-facing message for [result], or null when the caller should
+  /// keep its own fallback ([StreamProbeResult.ok], [StreamProbeResult.serverError],
+  /// [StreamProbeResult.unknown]).
+  ///
+  /// Shared by the video path (`UnifiedVideoPlayer._surfaceError`) and the
+  /// native audio path (`NativeAudioService`), so both report a dead stream in
+  /// the same words. The wording is load-bearing: `player_page.dart`'s
+  /// `_errorIcon()` string-matches it to pick an icon.
+  static String? userMessage(StreamProbeResult result) => switch (result) {
+        StreamProbeResult.notFound => 'Stream not found (404)',
+        StreamProbeResult.forbidden => 'Access denied (403)',
+        StreamProbeResult.unauthorized => 'Authentication required (401)',
+        StreamProbeResult.networkError =>
+          'Network error — check your connection',
+        StreamProbeResult.serverError ||
+        StreamProbeResult.ok ||
+        StreamProbeResult.unknown =>
+          null,
+      };
+
+  /// Whether [result] means retrying the same URL cannot help: the server
+  /// answered, and the answer was no.
+  static bool isPermanent(StreamProbeResult result) =>
+      result == StreamProbeResult.notFound ||
+      result == StreamProbeResult.forbidden ||
+      result == StreamProbeResult.unauthorized;
+
   static StreamProbeResult _classify(int status) {
     if (status == 404) return StreamProbeResult.notFound;
     if (status == 403) return StreamProbeResult.forbidden;

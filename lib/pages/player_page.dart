@@ -189,6 +189,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   StreamSubscription<PlaybackState>? _playbackStateSubscription;
   StreamSubscription<PlaybackControl>? _controlSubscription;
   StreamSubscription<bool>? _bufferingSubscription;
+  StreamSubscription<String>? _audioErrorSubscription;
   StreamSubscription<bool>? _pipSubscription;
 
   @override
@@ -359,6 +360,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
     });
 
+    _audioErrorSubscription =
+        NativeAudioService.errorStream.listen((message) {
+      if (mounted && _isAudioModeActive) _showAudioError(message);
+    });
+
     _controlSubscription = NativeAudioService.controlStream.listen((control) {
       if (mounted) {
         switch (control) {
@@ -388,6 +394,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _playbackStateSubscription?.cancel();
     _controlSubscription?.cancel();
     _bufferingSubscription?.cancel();
+    _audioErrorSubscription?.cancel();
     _pipSubscription?.cancel();
     _controlsHideTimer?.cancel();
     _channelListScrollController.dispose();
@@ -491,6 +498,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       setState(() {
         _audioOnlyMode = true;
         _isBuffering = true;
+        // Switching mode is a fresh attempt. A video error left set here kept
+        // `_buildBody()` on the error screen while audio played behind it.
+        _hasError = false;
+        _errorMessage = '';
         // This setState is what removes the keyed UnifiedVideoPlayer from the
         // tree, so its State is disposed inside this very frame and reports
         // "busy" on the way out. Agreeing with that here is not cosmetic: if
@@ -524,6 +535,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           // in the report: it depends purely on whether the event beat this line.
           _isBuffering = NativeAudioService.isBuffering;
         });
+        // Same race as `_isBuffering` above: a dead stream can fail before
+        // `_isAudioModeActive` was true, so the error listener dropped it.
+        final error = NativeAudioService.lastError;
+        if (error != null) _showAudioError(error);
       } else {
         setState(() {
           _audioOnlyMode = false;
@@ -552,6 +567,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     setState(() {
       _audioOnlyMode = false;
+      // Fresh attempt, as in `_enableAudioMode`: an audio error must not
+      // follow the user into video, where clearing it is what mounts the player.
+      _hasError = false;
+      _errorMessage = '';
     });
     _syncDerivedPlaybackState();
   }
@@ -753,9 +772,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       title: _currentChannel.name,
       logo: _currentChannel.logo,
     );
-    if (!success && mounted) {
+    if (!mounted) return;
+    if (!success) {
       setState(() => _isBuffering = false);
+      return;
     }
+    final error = NativeAudioService.lastError;
+    if (error != null) _showAudioError(error);
+  }
+
+  /// Audio mode's equivalent of the video player's `onError`: the service has
+  /// stopped trying, so replace the "Loading stream..." placeholder with the
+  /// same error screen video shows. Retry there restarts the audio stream
+  /// (see `_buildError`).
+  void _showAudioError(String message) {
+    setState(() {
+      _hasError = true;
+      _errorMessage = message;
+      _isBuffering = false;
+    });
+    _syncDerivedPlaybackState();
   }
 
   Widget _buildExpandableChannelList() {
@@ -1538,6 +1574,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   _errorMessage = '';
                 });
                 _syncDerivedPlaybackState();
+                // Audio mode has no player to remount: the placeholder comes
+                // back instead, so the stream has to be asked for again.
+                if (_audioOnlyMode && _isAudioModeActive) {
+                  _switchAudioChannelIfNeeded();
+                  return;
+                }
                 // `_buildBody()` returns `_buildError()` while `_hasError` is
                 // set, so the player is NOT in the tree here and
                 // `currentState` is null — this call is a no-op today. What
