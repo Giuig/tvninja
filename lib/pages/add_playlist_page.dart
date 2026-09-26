@@ -455,26 +455,38 @@ class _AddPlaylistPageState extends State<AddPlaylistPage>
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-            child: SegmentedButton<int>(
-              showSelectedIcon: false,
-              segments: const [
-                ButtonSegment(
-                    value: 0, icon: Icon(Icons.flag), label: Text('Countries')),
-                ButtonSegment(
-                    value: 1,
-                    icon: Icon(Icons.language),
-                    label: Text('Languages')),
-                ButtonSegment(
-                    value: 2,
-                    icon: Icon(Icons.category),
-                    label: Text('Categories')),
-              ],
-              selected: {_browseSelectedIndex},
-              onSelectionChanged: (selection) {
-                _browseSearchController.clear();
-                setState(() => _browseSelectedIndex = selection.first);
-              },
-            ),
+            // Icons only when there is room for them. With icon, label and
+            // padding, a segment needs about 125 px for "Categories", so three
+            // do not fit a phone: at 362 px the labels broke mid-word
+            // ("Countrie / s"), and a 393 dp Pixel 4a is only just short too.
+            // Labels are the part that carries meaning, so the icons go first.
+            child: LayoutBuilder(builder: (context, constraints) {
+              final showIcons = constraints.maxWidth >= 420;
+              Widget label(String text) =>
+                  Text(text, maxLines: 1, softWrap: false);
+              return SegmentedButton<int>(
+                showSelectedIcon: false,
+                segments: [
+                  ButtonSegment(
+                      value: 0,
+                      icon: showIcons ? const Icon(Icons.flag) : null,
+                      label: label('Countries')),
+                  ButtonSegment(
+                      value: 1,
+                      icon: showIcons ? const Icon(Icons.language) : null,
+                      label: label('Languages')),
+                  ButtonSegment(
+                      value: 2,
+                      icon: showIcons ? const Icon(Icons.category) : null,
+                      label: label('Categories')),
+                ],
+                selected: {_browseSelectedIndex},
+                onSelectionChanged: (selection) {
+                  _browseSearchController.clear();
+                  setState(() => _browseSelectedIndex = selection.first);
+                },
+              );
+            }),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),

@@ -396,10 +396,14 @@ class AppStatsNotifier extends ChangeNotifier {
   }
 
   /// Whether a playlist with the same (normalised) URL is already added.
-  bool hasPlaylistWithUrl(String url) {
+  ///
+  /// [exceptId] leaves one playlist out: editing a playlist must not report
+  /// it as a duplicate of itself.
+  bool hasPlaylistWithUrl(String url, {String? exceptId}) {
     if (url.trim().isEmpty) return false;
     final target = normalisePlaylistUrl(url);
-    return _playlists.any((p) => normalisePlaylistUrl(p.url) == target);
+    return _playlists.any(
+        (p) => p.id != exceptId && normalisePlaylistUrl(p.url) == target);
   }
 
   /// Adds [playlist], unless one with the same URL is already present.

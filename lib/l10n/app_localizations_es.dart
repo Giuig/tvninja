@@ -12,10 +12,10 @@ class AppLocalizationsEs extends AppLocalizations {
   String get loading => 'Cargando...';
 
   @override
-  String get fillScreen => 'Fill screen';
+  String get fillScreen => 'Llenar pantalla';
 
   @override
-  String get originalSize => 'Original size';
+  String get originalSize => 'Tamaño original';
 
   @override
   String get welcomeToTvninja => '¡Bienvenido a TV Ninja!';
@@ -55,8 +55,14 @@ class AppLocalizationsEs extends AppLocalizations {
   String get fillAllFields => 'Completa todos los campos';
 
   @override
-  String playlistAdded(Object count) {
-    return 'Lista con $count canales agregada';
+  String playlistAdded(num count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Lista con $count canales agregada',
+      one: 'Lista con $count canal agregada',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -101,7 +107,13 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String nChannels(int count) {
-    return '$count canales';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count canales',
+      one: '$count canal',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -128,8 +140,14 @@ class AppLocalizationsEs extends AppLocalizations {
   String get invalidUrl => 'URL inválida. Ingresa una URL HTTP/HTTPS válida.';
 
   @override
-  String channelsLoaded(Object count) {
-    return '$count canales cargados';
+  String channelsLoaded(num count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count canales cargados',
+      one: '$count canal cargado',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -159,9 +177,6 @@ class AppLocalizationsEs extends AppLocalizations {
   String get password => 'Contraseña';
 
   @override
-  String get rename => 'Renombrar';
-
-  @override
   String get copyUrl => 'Copiar URL';
 
   @override
@@ -169,9 +184,6 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get refresh => 'Actualizar';
-
-  @override
-  String get renamePlaylist => 'Renombrar lista';
 
   @override
   String get nameLabel => 'Nombre';
@@ -203,7 +215,13 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String channelsLoadedForCountry(int count, String country) {
-    return '$count canales cargados para $country';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count canales cargados para $country',
+      one: '$count canal cargado para $country',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -230,7 +248,13 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String loadingChannels(int count) {
-    return 'Cargando $count canales...';
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Cargando $count canales...',
+      one: 'Cargando $count canal...',
+    );
+    return '$_temp0';
   }
 
   @override
@@ -240,9 +264,6 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get playlistRefreshed => 'Lista actualizada';
-
-  @override
-  String get renamePlaylistHint => 'Ingresa nuevo nombre';
 
   @override
   String get deletePlaylistConfirmation =>
@@ -267,16 +288,16 @@ class AppLocalizationsEs extends AppLocalizations {
   String get switchToVideoDescription => 'Volver al modo video';
 
   @override
-  String get play => 'Play';
+  String get play => 'Reproducir';
 
   @override
-  String get pause => 'Pause';
+  String get pause => 'Pausa';
 
   @override
-  String get fullscreen => 'Fullscreen';
+  String get fullscreen => 'Pantalla completa';
 
   @override
-  String get exitFullscreen => 'Exit fullscreen';
+  String get exitFullscreen => 'Salir de pantalla completa';
 
   @override
   String get previousChannel => 'Canal anterior';
@@ -294,5 +315,14 @@ class AppLocalizationsEs extends AppLocalizations {
   String get browse => 'Explorar';
 
   @override
-  String get playlistAlreadyAdded => 'That playlist is already added';
+  String get playlistAlreadyAdded => 'Esa lista ya está agregada';
+
+  @override
+  String get edit => 'Editar';
+
+  @override
+  String get editPlaylist => 'Editar lista';
+
+  @override
+  String get save => 'Guardar';
 }

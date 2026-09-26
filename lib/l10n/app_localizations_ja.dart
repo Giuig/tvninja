@@ -12,10 +12,10 @@ class AppLocalizationsJa extends AppLocalizations {
   String get loading => '読み込み中...';
 
   @override
-  String get fillScreen => 'Fill screen';
+  String get fillScreen => '画面に合わせる';
 
   @override
-  String get originalSize => 'Original size';
+  String get originalSize => '元のサイズ';
 
   @override
   String get welcomeToTvninja => 'TV Ninjaへようこそ！';
@@ -54,7 +54,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get fillAllFields => 'すべての項目を入力してください';
 
   @override
-  String playlistAdded(Object count) {
+  String playlistAdded(num count) {
     return '$countチャンネルのプレイリストを追加';
   }
 
@@ -126,7 +126,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get invalidUrl => '無効なURLです。有効なHTTP/HTTPS URLを入力してください。';
 
   @override
-  String channelsLoaded(Object count) {
+  String channelsLoaded(num count) {
     return '$countチャンネル読み込み完了';
   }
 
@@ -157,9 +157,6 @@ class AppLocalizationsJa extends AppLocalizations {
   String get password => 'パスワード';
 
   @override
-  String get rename => '名前を変更';
-
-  @override
   String get copyUrl => 'URLをコピー';
 
   @override
@@ -167,9 +164,6 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get refresh => '更新';
-
-  @override
-  String get renamePlaylist => 'プレイリスト名を変更';
 
   @override
   String get nameLabel => '名前';
@@ -239,9 +233,6 @@ class AppLocalizationsJa extends AppLocalizations {
   String get playlistRefreshed => 'プレイリストを更新しました';
 
   @override
-  String get renamePlaylistHint => '新しい名前を入力';
-
-  @override
   String get deletePlaylistConfirmation => 'このプレイリストとすべてのチャンネルが完全に削除されます。';
 
   @override
@@ -263,16 +254,16 @@ class AppLocalizationsJa extends AppLocalizations {
   String get switchToVideoDescription => '動画モードに戻る';
 
   @override
-  String get play => 'Play';
+  String get play => '再生';
 
   @override
-  String get pause => 'Pause';
+  String get pause => '一時停止';
 
   @override
-  String get fullscreen => 'Fullscreen';
+  String get fullscreen => '全画面';
 
   @override
-  String get exitFullscreen => 'Exit fullscreen';
+  String get exitFullscreen => '全画面を終了';
 
   @override
   String get previousChannel => '前のチャンネル';
@@ -290,5 +281,14 @@ class AppLocalizationsJa extends AppLocalizations {
   String get browse => 'ブラウズ';
 
   @override
-  String get playlistAlreadyAdded => 'That playlist is already added';
+  String get playlistAlreadyAdded => 'このプレイリストは既に追加されています';
+
+  @override
+  String get edit => '編集';
+
+  @override
+  String get editPlaylist => 'プレイリストを編集';
+
+  @override
+  String get save => '保存';
 }
