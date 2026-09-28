@@ -14,6 +14,7 @@ class M3UChannel {
   final String? licenseKey;
   final String? userAgent;
   final String playlistId;
+  final bool isRadio;
 
   M3UChannel({
     required this.id,
@@ -26,6 +27,7 @@ class M3UChannel {
     this.licenseKey,
     this.userAgent,
     this.playlistId = '',
+    this.isRadio = false,
   });
 
   String get uniqueId {
@@ -44,6 +46,7 @@ class M3UChannel {
       playlistId: playlistId,
       type: ChannelType.live,
       userAgent: userAgent,
+      isRadio: isRadio,
     );
   }
 }
@@ -155,6 +158,23 @@ class M3UParser {
         }
       }
 
+      // `radio` is read separately from the generic metadata loop above,
+      // which only keeps `group(2)` (the quoted form) and so silently drops
+      // an unquoted `radio=true`. This one attribute needs both forms, so
+      // it's pulled via `group(2) ?? group(3)` here instead of widening the
+      // shared loop for every attribute (which would change how names and
+      // logos parse for some existing playlists).
+      bool isRadio = false;
+      for (final match in metadataMatches) {
+        // Inlined rather than a new `_M3U_..._MARK` constant, to match this
+        // file's existing naming convention without adding a fresh
+        // `constant_identifier_names` info (analyze baseline: 29 issues).
+        if (match.group(1)?.trim() == 'radio') {
+          final value = (match.group(2) ?? match.group(3))?.trim();
+          isRadio = value?.toLowerCase() == 'true';
+        }
+      }
+
       final kodiMetadata = <String, String?>{};
       for (final match in kodiMatches) {
         final key = match.group(1)?.trim();
@@ -179,6 +199,7 @@ class M3UParser {
         licenseKey: kodiMetadata[_KODI_LICENSE_KEY],
         userAgent: userAgent,
         playlistId: playlistId,
+        isRadio: isRadio,
       ));
 
       infoMatch = null;

@@ -15,6 +15,13 @@ class Channel {
   final ChannelType type;
   final String? userAgent;
 
+  /// From the M3U `radio="true"` attribute (quoted or unquoted). A strong,
+  /// zero-network signal that the channel is audio-only.
+  ///
+  /// Defaults to `false` so every pre-existing construction site (json
+  /// without the key, xtream channels, the debug seed) is unaffected.
+  final bool isRadio;
+
   Channel({
     required this.name,
     required this.url,
@@ -23,6 +30,7 @@ class Channel {
     this.playlistId = '',
     this.type = ChannelType.live,
     this.userAgent,
+    this.isRadio = false,
   });
 
   /// Unique ID based on URL only.
@@ -62,6 +70,7 @@ class Channel {
       'playlistId': playlistId,
       'type': type.name,
       'userAgent': userAgent,
+      'isRadio': isRadio,
     };
   }
 
@@ -77,6 +86,9 @@ class Channel {
         orElse: () => ChannelType.live,
       ),
       userAgent: json['userAgent'],
+      // A missing key — every channel stored before this field existed —
+      // means false, not null: legacy stored playlists still load.
+      isRadio: json['isRadio'] == true,
     );
   }
 
@@ -88,6 +100,7 @@ class Channel {
     String? playlistId,
     ChannelType? type,
     String? userAgent,
+    bool? isRadio,
   }) {
     return Channel(
       name: name ?? this.name,
@@ -97,6 +110,7 @@ class Channel {
       playlistId: playlistId ?? this.playlistId,
       type: type ?? this.type,
       userAgent: userAgent ?? this.userAgent,
+      isRadio: isRadio ?? this.isRadio,
     );
   }
 }
