@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -144,4 +145,53 @@ void main() {
     // Re-open a server so tearDown's close() has something valid to act on.
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   });
+
+  test(
+    'a redirect loop past the redirect limit degrades to unknown, never audio',
+    () async {
+      // Every request 302s straight back to itself -- an unbounded loop
+      // that never settles on a final response. A channel behind a
+      // misconfigured or looping relinker looks exactly like this, and a
+      // failure of this shape must never be read as evidence of anything,
+      // strong audio least of all -- it would otherwise lock a real TV
+      // channel into audio mode for the strong-audio cache TTL.
+      server.listen((request) {
+        request.response
+          ..statusCode = 302
+          ..headers.set('location', '$baseUrl/loop')
+          ..close();
+      });
+
+      final verdict = await StreamKindProbe.probe('$baseUrl/loop', null);
+
+      expect(verdict, StreamKindVerdict.unknown);
+    },
+    timeout: const Timeout(Duration(seconds: 10)),
+  );
+
+  test(
+    'a malformed, non-HTTP response degrades to unknown, never audio',
+    () async {
+      // A raw socket server, bypassing HttpServer entirely, so the client
+      // is handed bytes that don't parse as an HTTP response at all --
+      // this is the actual shape of the failure a legacy `ICY 200 OK`
+      // status line was once (wrongly) special-cased to treat as strong
+      // audio evidence. Any response dart:io's HttpClient can't parse must
+      // degrade the same way as every other failure: unknown, not a
+      // locking verdict.
+      final rawServer = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => rawServer.close());
+      rawServer.listen((socket) {
+        socket.add(utf8.encode('NOT AN HTTP RESPONSE AT ALL\r\n\r\n'));
+        socket.close();
+      });
+
+      final verdict = await StreamKindProbe.probe(
+        'http://127.0.0.1:${rawServer.port}/garbage',
+        null,
+      );
+
+      expect(verdict, StreamKindVerdict.unknown);
+    },
+  );
 }

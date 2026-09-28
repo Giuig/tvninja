@@ -52,22 +52,14 @@ class StreamKindProbe {
       final verdict = await _probe(client, url, headers).timeout(_cap);
       _log(url, verdict, stopwatch);
       return verdict;
-    } on HttpException {
-      // A raw `ICY 200 OK` status line (legacy Shoutcast v1) isn't valid
-      // HTTP, and dart:io's HttpClient throws trying to parse it rather than
-      // exposing a status code at all. No such response was seen against a
-      // 20-entry audio census (every source answered through an
-      // HTTP-speaking Icecast/nginx front), but a server that still does
-      // this can only be a legacy audio source -- treat the parse failure
-      // itself as strong evidence rather than as a probe failure.
-      const verdict = StreamKindVerdict(
-        StreamKind.audioOnly,
-        KindConfidence.strong,
-        KindSource.icyException,
-      );
-      _log(url, verdict, stopwatch);
-      return verdict;
     } catch (e) {
+      // Every failure -- a timeout, a refused connection, a malformed HTTP
+      // response, a redirect loop past maxRedirects -- degrades to unknown
+      // rather than being read as evidence of anything. A broken response is
+      // not proof of audio: a TV channel behind a looping or malfunctioning
+      // relinker would otherwise get misread as a legacy audio server and
+      // locked into audio mode for 30 days by exactly the kind of failure
+      // that says nothing about what the stream actually carries.
       _log(url, StreamKindVerdict.unknown, stopwatch, error: e);
       return StreamKindVerdict.unknown;
     } finally {

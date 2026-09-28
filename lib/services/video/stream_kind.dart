@@ -23,11 +23,6 @@ enum KindSource {
   /// An `icy-*` response header, with no usable `Content-Type`.
   icyHeader,
 
-  /// `dart:io`'s `HttpClient` failed to parse the response as HTTP at all —
-  /// the fingerprint of a legacy Shoutcast v1 server's raw `ICY 200 OK`
-  /// status line.
-  icyException,
-
   /// An HLS master playlist's `EXT-X-STREAM-INF` attributes.
   hlsMasterCodecs,
 
@@ -132,7 +127,7 @@ class _Variant {
 
 /// Classifies HLS playlist text — either a master (one or more
 /// `EXT-X-STREAM-INF` variants) or a media playlist (a flat list of
-/// segments) — per REQ-03:
+/// segments):
 ///
 /// - Master: a `RESOLUTION` attribute, a video codec, or an
 ///   `EXT-X-MEDIA:TYPE=VIDEO` rendition means video. An all-audio-CODECS
