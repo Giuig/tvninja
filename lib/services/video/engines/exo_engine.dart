@@ -127,14 +127,13 @@ class ExoEngine extends PlayerEngine {
   /// The `formatHint` analogue of mpv_options.dart's `applyFormatHint()` —
   /// reuses the same suffix-matching logic (`guessStreamFormat`) rather than
   /// duplicating it, mapped onto `video_player`'s own format enum. A *known*
-  /// non-HLS suffix (`.ts`/`.mp4`) falls through to `VideoFormat.other`,
-  /// letting ExoPlayer's own bundled progressive extractors handle it
-  /// directly (there's no dedicated `VideoFormat` value for mpegts/mp4).
+  /// suffix always wins over [contentType]: the URL's own extension is
+  /// stronger evidence than a header a proxy could mislabel.
   ///
   /// Bug fix (found live-testing RAI on-device, post-UA-fix): a URL with
   /// **no** recognizable suffix at all used to fall through to
-  /// `VideoFormat.other`/progressive too — indistinguishable, in this
-  /// method, from "known non-HLS suffix". That's wrong for this app's actual
+  /// `VideoFormat.other`/progressive — indistinguishable, in this method,
+  /// from "known non-HLS suffix". That's wrong for this app's actual
   /// traffic. RAI's whole lineup (4+ channels) is served through a
   /// relinker/redirect URL —
   /// `mediapolis.rai.it/relinker/relinkerServlet.htm?cont=...` — with no
@@ -147,23 +146,31 @@ class ExoEngine extends PlayerEngine {
   /// `UnrecognizedInputFormatException` outright. mpv/libmpv instead does
   /// real content-sniffing regardless of URL shape, which is why this exact
   /// class of URL always worked on the mpv path and only surfaced here once
-  /// the UA fix stopped a 403 from masking it. In this app's actual channel
-  /// list, a no-suffix URL is overwhelmingly a relinker/redirect-style
-  /// live-TV service that resolves to HLS — so `unknown` now defaults to
-  /// `VideoFormat.hls`, split out from the *known*-non-HLS-suffix cases
-  /// below, which are unaffected and still map to `VideoFormat.other`.
+  /// the UA fix stopped a 403 from masking it.
   ///
-  /// Since [StreamUrlResolver] now runs first, this is normally called with
-  /// the *resolved* URL, which usually does carry a real `.m3u8` suffix —
-  /// so the `unknown` branch has become the fallback for the cases where
-  /// resolution was skipped or failed, not the normal path for relinker URLs.
-  VideoFormat _formatHintFor(String url) {
-    switch (guessStreamFormat(url)) {
+  /// [contentType] — the header `StreamUrlResolver` reads from the same GET
+  /// it already makes — now decides the no-suffix case instead of a blanket
+  /// default: a bare Icecast/Shoutcast stream (`audio/mpeg`, `audio/aacp`,
+  /// ...) maps to `VideoFormat.other` (progressive, so ExoPlayer's own
+  /// extractors sniff the actual codec) rather than being force-fed as HLS,
+  /// which used to throw the same `UnrecognizedInputFormatException` this
+  /// method exists to avoid — just for audio streams instead of RAI. A
+  /// content type this method doesn't recognise, or none at all (resolution
+  /// was skipped or failed), still falls back to `VideoFormat.hls` — RAI's
+  /// no-suffix relinkers overwhelmingly resolve to HLS, so that stays the
+  /// safe default for whatever's left unclassified.
+  VideoFormat _formatHintFor(String url, String? contentType) {
+    final suffixHint = guessStreamFormat(url);
+    final hint = suffixHint == StreamFormatHint.unknown
+        ? formatHintFromContentType(contentType)
+        : suffixHint;
+    switch (hint) {
       case StreamFormatHint.hls:
       case StreamFormatHint.unknown:
         return VideoFormat.hls;
       case StreamFormatHint.mpegTs:
       case StreamFormatHint.mp4:
+      case StreamFormatHint.audio:
         return VideoFormat.other;
     }
   }
@@ -189,8 +196,10 @@ class ExoEngine extends PlayerEngine {
     // some providers (see StreamUrlResolver) — resolve on Dart's stack first
     // and hand ExoPlayer the real playlist URL. Returns `url` untouched for
     // direct playlist URLs and for every failure mode, so this is a no-op for
-    // the overwhelming majority of channels.
-    final playbackUrl = await StreamUrlResolver.resolve(url, headers);
+    // the overwhelming majority of channels. The content type rides along
+    // from the same GET, for `_formatHintFor` below.
+    final resolved = await StreamUrlResolver.resolve(url, headers);
+    final playbackUrl = resolved.url;
 
     // Superseded while we were resolving (stop/dispose, or a newer
     // open/switch). Bail out before constructing anything — there is no
@@ -201,7 +210,7 @@ class ExoEngine extends PlayerEngine {
     final controller = VideoPlayerController.networkUrl(
       Uri.parse(playbackUrl),
       httpHeaders: headers ?? const {},
-      formatHint: _formatHintFor(playbackUrl),
+      formatHint: _formatHintFor(playbackUrl, resolved.contentType),
     );
     _controller = controller;
     controller.addListener(_onControllerTick);

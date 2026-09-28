@@ -96,6 +96,11 @@ void applyFormatHint(Player player, String url) {
       StreamFormatHint.hls => 'hls',
       StreamFormatHint.mpegTs => 'mpegts',
       StreamFormatHint.mp4 => 'mp4',
+      // Empty string means "keep sniffing" (see the demuxer-lavf-probesize
+      // comment above) — same as unknown. mpv has no dedicated demuxer name
+      // to force for a bare MP3/AAC/etc. stream; its own lavf probing
+      // handles those correctly already, unlike ExoPlayer's format-hint gate.
+      StreamFormatHint.audio => '',
       StreamFormatHint.unknown => '',
     };
     native.setProperty('demuxer-lavf-format', fmt);

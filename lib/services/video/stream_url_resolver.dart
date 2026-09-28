@@ -72,39 +72,57 @@ class StreamUrlResolver {
   /// fire *within* the total budget, never extend it.
   static const Duration _connectTimeout = Duration(seconds: 4);
 
-  /// Follows [url]'s redirect chain and returns the final URL, or [url]
-  /// unchanged if it doesn't need resolving or resolution fails.
+  /// Follows [url]'s redirect chain and returns the final URL plus the
+  /// response's `Content-Type` header — or [url] unchanged with a `null`
+  /// content type if it doesn't need resolving or resolution fails outright.
+  ///
+  /// The content type comes from the very GET this method already makes to
+  /// follow the redirect chain — a header, not the body, so it costs nothing
+  /// extra to read and is returned even when nothing about the URL itself
+  /// needed rewriting (a bare-path Icecast stream that answers `200` with
+  /// `Content-Type: audio/mpeg` and never redirects at all is exactly that
+  /// case, and it's the common one). The engine turns this into a format
+  /// hint; every fallback below still lands on the original [url].
   ///
   /// [headers] is the same `User-Agent` map the engine will play with, so the
   /// resolve request is made under the same identity as playback — providers
   /// that vary their response by UA hand back the URL playback will actually
   /// use.
-  static Future<String> resolve(String url, Map<String, String>? headers) async {
-    if (guessStreamFormat(url) != StreamFormatHint.unknown) return url;
+  static Future<({String url, String? contentType})> resolve(
+    String url,
+    Map<String, String>? headers,
+  ) async {
+    if (guessStreamFormat(url) != StreamFormatHint.unknown) {
+      return (url: url, contentType: null);
+    }
 
     final client = HttpClient()..connectionTimeout = _connectTimeout;
     try {
-      final resolved = await _follow(client, url, headers).timeout(_timeout);
-      if (resolved == null) return url;
-      debugPrint('[StreamUrlResolver] $url -> $resolved');
-      return resolved;
+      final result = await _probe(client, url, headers).timeout(_timeout);
+      if (result == null) return (url: url, contentType: null);
+      if (result.url != url) {
+        debugPrint('[StreamUrlResolver] $url -> ${result.url}');
+      }
+      return result;
     } catch (e) {
       debugPrint('[StreamUrlResolver] resolve failed for $url: $e');
-      return url;
+      return (url: url, contentType: null);
     } finally {
-      // The body is deliberately never read — only the redirect chain matters,
-      // and the engine is about to fetch the playlist itself. force: true
-      // drops the still-open response socket instead of leaking it: a plain
-      // close() waits for the connection to fall idle, which an undrained
-      // response may never do.
+      // The body is deliberately never read — only the headers and the
+      // redirect chain matter, and the engine is about to fetch the playlist
+      // itself. force: true drops the still-open response socket instead of
+      // leaking it: a plain close() waits for the connection to fall idle,
+      // which an undrained response may never do.
       client.close(force: true);
     }
   }
 
-  /// Follows [url]'s redirect chain and returns the final URL, or `null` if
-  /// there is nothing worth rewriting. Split out so [resolve]'s single
+  /// Makes the one GET [resolve] needs and returns the final URL plus the
+  /// response's `Content-Type`, or `null` if the provider refused the
+  /// request outright (a non-200 status — nothing here can be trusted, so the
+  /// engine should make its own attempt). Split out so [resolve]'s single
   /// `.timeout(_timeout)` covers connection setup as well as the response.
-  static Future<String?> _follow(
+  static Future<({String url, String? contentType})?> _probe(
     HttpClient client,
     String url,
     Map<String, String>? headers,
@@ -115,11 +133,16 @@ class StreamUrlResolver {
     headers?.forEach(request.headers.set);
     final response = await request.close();
 
-    if (response.statusCode != 200 || response.redirects.isEmpty) {
-      // Either the URL was already final (nothing gained by rewriting it) or
-      // the provider refused us too — in both cases let the engine make its
-      // own attempt rather than substituting a URL we don't trust.
+    if (response.statusCode != 200) {
       return null;
+    }
+
+    final contentType = response.headers.value('content-type');
+
+    if (response.redirects.isEmpty) {
+      // Already the final URL — nothing to rewrite, but the content type of
+      // this direct response is still real signal for the format hint.
+      return (url: url, contentType: contentType);
     }
 
     // `RedirectInfo.location` is the raw, possibly-relative `Location` header
@@ -133,6 +156,6 @@ class StreamUrlResolver {
     for (final redirect in response.redirects) {
       resolved = resolved.resolveUri(redirect.location);
     }
-    return resolved.toString();
+    return (url: resolved.toString(), contentType: contentType);
   }
 }
