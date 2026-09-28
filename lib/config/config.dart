@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tvninja/services/m3u_parser.dart';
+import 'package:tvninja/services/video/stream_kind_cache.dart';
 
 class Channel {
   final String name;
@@ -315,6 +316,8 @@ class AppStatsNotifier extends ChangeNotifier {
   Future<void> _loadData() async {
     SharedPreferences preferences = await SharedPreferences.getInstance();
 
+    await StreamKindCache.load();
+
     _totalViews = preferences.getInt('totalViews') ?? 0;
 
     List<String>? favoritesJson = preferences.getStringList('favorites');
@@ -527,6 +530,7 @@ class AppStatsNotifier extends ChangeNotifier {
     _recentlyWatchedIds = [];
     _totalViews = 0;
     _cachedFavoriteChannels = null;
+    await StreamKindCache.clear();
     await _saveData();
     notifyListeners();
   }
