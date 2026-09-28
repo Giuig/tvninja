@@ -7,8 +7,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tvninja/config/config.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:tvninja/l10n/app_localizations.dart';
+import 'package:tvninja/pages/player_mode.dart';
 import 'package:tvninja/services/native_audio_service.dart';
 import 'package:tvninja/services/pip_service.dart';
+import 'package:tvninja/services/video/stream_kind_classifier.dart';
 import 'package:tvninja/services/video/unified_video_player.dart';
 import 'package:tvninja/widgets/channel_logo.dart';
 
@@ -40,6 +42,31 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _isAudioModeActive = false;
   bool _isInPipMode = false;
   bool _channelListExpanded = false;
+
+  /// Whether the current channel's stream kind has been decided yet.
+  ///
+  /// `true` the instant it's known synchronously -- an already-playing
+  /// background session (`widget.initialAudioOnly`), a `radio="true"`
+  /// channel, or a cache hit -- and on web, where classification never runs
+  /// at all (out of scope; RESEARCH.md). `false` only for the window between
+  /// [_resolveInitialMode] finding a genuine miss and [_resolveModeAsync]'s
+  /// probe landing -- during which `_buildBody` shows the channel-logo
+  /// placeholder instead of mounting either player, and PiP eligibility, the
+  /// on-video gesture layer and its control overlay all stay off (see
+  /// `_syncPipEligibility` and `build`'s gating on this flag): none of them
+  /// should be reachable for a channel that might still turn out to be
+  /// audio-only with no video to show them over.
+  bool _modeResolved = true;
+
+  /// Bumped by every manual mode change ([_enableAudioMode],
+  /// [_disableAudioMode]) so a still-in-flight [_resolveModeAsync] can tell
+  /// it has been superseded and must not overwrite what the user just chose.
+  ///
+  /// This is the generation counter `rules/dart.md`'s async-state-discipline
+  /// rule requires for the `await`s [_resolveModeAsync] introduces --
+  /// captured before those awaits, re-checked after each one, exactly like
+  /// `ExoEngine._openGeneration`.
+  int _modeGeneration = 0;
 
   /// Drives the quick channel list so it can be centred on the current channel.
   ///
@@ -210,6 +237,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (widget.initialAudioOnly) {
       _audioOnlyMode = true;
       _isAudioModeActive = true;
+    } else if (!kIsWeb) {
+      // Web classification/probing is out of scope (CORS; RESEARCH.md) --
+      // web channels always open exactly as before.
+      _resolveInitialMode();
     }
 
     unawaited(_restoreStretchToFill());
@@ -224,6 +255,75 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
       }
     });
+  }
+
+  /// Classifies the current channel before the first frame, so a channel
+  /// [decideMode] locks into audio never mounts `UnifiedVideoPlayer` for even
+  /// one frame -- no ExoEngine, no HLS parser error, no black box, no
+  /// `KEEP_SCREEN_ON`, no PiP.
+  ///
+  /// [StreamKindClassifier.peek] answers synchronously whenever it can
+  /// (`radio="true"`, or an already-cached verdict from an earlier open) --
+  /// on that hit the decision is applied immediately by writing fields
+  /// directly rather than through `setState`, which Flutter disallows this
+  /// early in the lifecycle. On a genuine miss, [_modeResolved] is left
+  /// false and [_resolveModeAsync] takes over.
+  void _resolveInitialMode() {
+    final verdict = StreamKindClassifier.peek(_currentChannel);
+    if (verdict == null) {
+      _modeResolved = false;
+      unawaited(_resolveModeAsync());
+      return;
+    }
+
+    final decision = decideMode(verdict);
+    _logModeDecision(decision, probeMs: 0);
+    if (!decision.audio) return;
+
+    _audioOnlyMode = true;
+    // `_startNativeAudio` reads `_playerKey.currentState` and calls
+    // `setState`, neither of which is safe to do from `initState` itself --
+    // deferred to the first post-frame callback. The video player never
+    // mounts in the meantime because `_audioOnlyMode` is already true by the
+    // time `_buildBody` runs its first build.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_startNativeAudio());
+    });
+  }
+
+  /// The async counterpart of [_resolveInitialMode], for a channel [peek]
+  /// couldn't answer synchronously.
+  ///
+  /// Generation-guarded per `rules/dart.md`'s async-state-discipline rule: a
+  /// manual toggle bumps [_modeGeneration] (see [_enableAudioMode],
+  /// [_disableAudioMode]) specifically so it always wins over a probe that is
+  /// still in flight when the user acts, rather than this method clobbering
+  /// whatever the user just chose once its own await finally resolves.
+  Future<void> _resolveModeAsync() async {
+    final generation = _modeGeneration;
+    final stopwatch = Stopwatch()..start();
+    final verdict = await StreamKindClassifier.classify(_currentChannel);
+    stopwatch.stop();
+    if (!mounted || generation != _modeGeneration) return;
+
+    final decision = decideMode(verdict);
+    _logModeDecision(decision, probeMs: stopwatch.elapsedMilliseconds);
+
+    if (!decision.audio) {
+      setState(() => _modeResolved = true);
+      return;
+    }
+
+    await _enterAudioModeState();
+    if (!mounted || generation != _modeGeneration) return;
+    await _startNativeAudio();
+  }
+
+  /// One line per open, matching `StreamKindProbe`'s own `[StreamKind] ...`
+  /// log (`stream_kind_probe.dart`) so a logcat capture shows both the raw
+  /// evidence and the mode it produced from it.
+  void _logModeDecision(PlayerModeDecision decision, {required int probeMs}) {
+    debugPrint('[PlayerMode] ${_currentChannel.name}: $decision (${probeMs}ms)');
   }
 
   void _listenToPipState() {
@@ -474,10 +574,30 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _syncPipEligibility() {
-    PipService.setFullscreenVideoMode(!_audioOnlyMode && !_hasError);
+    // A channel whose mode hasn't been decided yet (`_resolveModeAsync` still
+    // probing) is never PiP-eligible -- there's nothing on screen worth
+    // pinning, and it may still turn out to be audio-only. See
+    // `_modeResolved`'s own doc comment.
+    PipService.setFullscreenVideoMode(
+        _modeResolved && !_audioOnlyMode && !_hasError);
   }
 
-  Future<void> _enableAudioMode() async {
+  /// Puts the page into the audio-mode UI state -- stops any playing video,
+  /// shows the audio placeholder with its spinner, and clears a stale error
+  /// -- without starting native playback.
+  ///
+  /// Split out of what used to be the entire body of `_enableAudioMode` so a
+  /// channel [decideMode] locks into audio from the very first open can run
+  /// this part from [_resolveModeAsync], after the first frame.
+  /// [_resolveInitialMode]'s own synchronous hit doesn't call this at all --
+  /// there the video player never mounted in the first place, so there's
+  /// nothing to stop and no placeholder transition to show; it only needs
+  /// [_startNativeAudio], which that method's caller runs next.
+  ///
+  /// Callers that can fail partway (the manual toggle, [_enableAudioMode])
+  /// wrap this together with [_startNativeAudio] in their own try/catch,
+  /// exactly as the two were one method before this split.
+  Future<void> _enterAudioModeState() async {
     if (kIsWeb) {
       setState(() {
         _audioOnlyMode = true;
@@ -491,62 +611,94 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       return;
     }
 
-    try {
-      await _playerKey.currentState?.stop();
-      // Show the audio placeholder with spinner immediately — before play() is
-      // called — so the user sees loading feedback from the very first frame.
+    await _playerKey.currentState?.stop();
+    // Show the audio placeholder with spinner immediately — before play() is
+    // called — so the user sees loading feedback from the very first frame.
+    setState(() {
+      _audioOnlyMode = true;
+      _isBuffering = true;
+      // Switching mode is a fresh attempt. A video error left set here kept
+      // `_buildBody()` on the error screen while audio played behind it.
+      _hasError = false;
+      _errorMessage = '';
+      // This setState is what removes the keyed UnifiedVideoPlayer from the
+      // tree, so its State is disposed inside this very frame and reports
+      // "busy" on the way out. Agreeing with that here is not cosmetic: if
+      // the flag still said false, the callback below would call setState on
+      // this State again while the tree is locked, and Flutter throws.
+      // Reproduced on device before this line existed — tapping audio-only
+      // during smooth playback was enough.
+      _isVideoBuffering = true;
+    });
+    // Pressing home in audio-only mode should background the app normally,
+    // not enter picture-in-picture.
+    _syncDerivedPlaybackState();
+  }
+
+  /// Starts native audio playback for the current channel, reconciling
+  /// [_isAudioModeActive]/[_isBuffering] on success and falling back to the
+  /// video player on failure.
+  ///
+  /// The other half of the old `_enableAudioMode` (see
+  /// [_enterAudioModeState]) -- kept separate because this is the part that
+  /// needs `_playerKey.currentState` (meaningless before the first frame) and
+  /// `NativeAudioService`, which [_enterAudioModeState] never touches. Used
+  /// both by the manual toggle and by a channel [decideMode] locks into audio
+  /// at open, from a post-frame callback in either case.
+  ///
+  /// `NativeAudioService.play` never throws (it catches everything
+  /// internally and returns `false`), so the only new risk this method's
+  /// extra call sites introduce is calling `setState` after this State was
+  /// disposed while the request was in flight -- guarded below.
+  Future<void> _startNativeAudio() async {
+    final success = await NativeAudioService.play(
+      url: _currentChannel.url,
+      title: _currentChannel.name,
+      logo: _currentChannel.logo,
+    );
+    if (!mounted) return;
+
+    if (success) {
       setState(() {
-        _audioOnlyMode = true;
-        _isBuffering = true;
-        // Switching mode is a fresh attempt. A video error left set here kept
-        // `_buildBody()` on the error screen while audio played behind it.
-        _hasError = false;
-        _errorMessage = '';
-        // This setState is what removes the keyed UnifiedVideoPlayer from the
-        // tree, so its State is disposed inside this very frame and reports
-        // "busy" on the way out. Agreeing with that here is not cosmetic: if
-        // the flag still said false, the callback below would call setState on
-        // this State again while the tree is locked, and Flutter throws.
-        // Reproduced on device before this line existed — tapping audio-only
-        // during smooth playback was enough.
-        _isVideoBuffering = true;
+        _isAudioModeActive = true;
+        // Re-read the live value rather than waiting for the next event.
+        //
+        // `_isBuffering` was set true above, before this flag existed, and the
+        // buffering listener drops anything arriving while `_isAudioModeActive`
+        // is still false. So when the stream settled *during* the await — the
+        // common case on a fast connection — the "no longer buffering" event
+        // was discarded and nothing later re-sent it, leaving the spinner
+        // turning over audio that was already playing. That is the "sometimes"
+        // in the report: it depends purely on whether the event beat this line.
+        _isBuffering = NativeAudioService.isBuffering;
       });
-      // Pressing home in audio-only mode should background the app normally,
-      // not enter picture-in-picture.
+      // Same race as `_isBuffering` above: a dead stream can fail before
+      // `_isAudioModeActive` was true, so the error listener dropped it.
+      final error = NativeAudioService.lastError;
+      if (error != null) _showAudioError(error);
+    } else {
+      setState(() {
+        _audioOnlyMode = false;
+        _isBuffering = false;
+      });
       _syncDerivedPlaybackState();
+      _playerKey.currentState?.play();
+    }
+  }
 
-      final success = await NativeAudioService.play(
-        url: _currentChannel.url,
-        title: _currentChannel.name,
-        logo: _currentChannel.logo,
-      );
+  Future<void> _enableAudioMode() async {
+    // A manual toggle always wins over a still-in-flight `_resolveModeAsync`
+    // from this same open -- see [_modeGeneration]'s doc comment.
+    _modeGeneration++;
 
-      if (success) {
-        setState(() {
-          _isAudioModeActive = true;
-          // Re-read the live value rather than waiting for the next event.
-          //
-          // `_isBuffering` was set true above, before this flag existed, and the
-          // buffering listener drops anything arriving while `_isAudioModeActive`
-          // is still false. So when the stream settled *during* the await — the
-          // common case on a fast connection — the "no longer buffering" event
-          // was discarded and nothing later re-sent it, leaving the spinner
-          // turning over audio that was already playing. That is the "sometimes"
-          // in the report: it depends purely on whether the event beat this line.
-          _isBuffering = NativeAudioService.isBuffering;
-        });
-        // Same race as `_isBuffering` above: a dead stream can fail before
-        // `_isAudioModeActive` was true, so the error listener dropped it.
-        final error = NativeAudioService.lastError;
-        if (error != null) _showAudioError(error);
-      } else {
-        setState(() {
-          _audioOnlyMode = false;
-          _isBuffering = false;
-        });
-        _syncDerivedPlaybackState();
-        _playerKey.currentState?.play();
-      }
+    if (kIsWeb) {
+      await _enterAudioModeState();
+      return;
+    }
+
+    try {
+      await _enterAudioModeState();
+      await _startNativeAudio();
     } catch (e) {
       debugPrint('Native audio failed: $e');
       try {
@@ -556,6 +708,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   Future<void> _disableAudioMode() async {
+    // Symmetric with `_enableAudioMode`: also supersedes a still-in-flight
+    // auto-resolve, so it can never re-enter audio mode out from under a
+    // user who just switched back to video.
+    _modeGeneration++;
+
     if (_isAudioModeActive) {
       await NativeAudioService.stop();
       _isAudioModeActive = false;
@@ -1175,7 +1332,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               alignment: Alignment.center,
               children: [
                 _buildBody(),
-                if (!_audioOnlyMode && !_hasError)
+                // `_modeResolved` gates this along with everything below it:
+                // while a channel's kind is still being decided (see its own
+                // doc comment) there is no video on screen yet to gesture at
+                // or overlay controls onto -- and it might never mount at
+                // all, if the pending decision turns out to lock audio.
+                if (_modeResolved && !_audioOnlyMode && !_hasError)
                   Positioned.fill(
                     child: GestureDetector(
                       behavior: HitTestBehavior.translucent,
@@ -1197,8 +1359,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 // Gated on `!_isInPipMode` so it cannot repeat the PiP leak
                 // that moving the fullscreen button out of
                 // `ExoEngine.buildSurface` fixed — that button was invisible to
-                // PiP state and painted itself over the thumbnail.
-                if (!_isInPipMode && !_audioOnlyMode && !_hasError)
+                // PiP state and painted itself over the thumbnail. `_modeResolved`
+                // for the same reason as the gesture layer above.
+                if (_modeResolved && !_isInPipMode && !_audioOnlyMode && !_hasError)
                   Positioned.fill(
                     child: IgnorePointer(
                       ignoring: !_controlsVisible,
@@ -1441,6 +1604,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Widget _buildBody() {
     if (_hasError) {
       return _buildError();
+    }
+
+    if (!_modeResolved) {
+      // Still classifying (`_resolveModeAsync`) -- neither player mounts
+      // until the decision lands, so a channel that turns out to lock audio
+      // never shows a video player even for one frame. Reuses the same
+      // channel-logo placeholder `UnifiedVideoPlayer` itself shows while
+      // connecting, so this looks like an ordinary load, not a new state.
+      return _buildChannelLogoWidget();
     }
 
     if (_audioOnlyMode) {
