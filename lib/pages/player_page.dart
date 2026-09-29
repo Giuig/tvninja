@@ -10,6 +10,7 @@ import 'package:tvninja/l10n/app_localizations.dart';
 import 'package:tvninja/pages/player_mode.dart';
 import 'package:tvninja/services/native_audio_service.dart';
 import 'package:tvninja/services/pip_service.dart';
+import 'package:tvninja/services/video/stream_kind.dart';
 import 'package:tvninja/services/video/stream_kind_classifier.dart';
 import 'package:tvninja/services/video/unified_video_player.dart';
 import 'package:tvninja/widgets/channel_logo.dart';
@@ -68,6 +69,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// this counter captured before it and re-checked after, exactly like
   /// `ExoEngine._openGeneration` guards the same class of race there.
   int _modeGeneration = 0;
+
+  /// Why the current channel is (or isn't) in audio mode -- [AudioModeReason
+  /// .none] for video, [.detected] for a channel the classifier locked on
+  /// its own evidence, [.user] for one the person chose with the AppBar
+  /// toggle. Every path that changes [_audioOnlyMode] keeps this in step:
+  /// [_resolveInitialMode]/[_resolveModeAsync] and the `initialAudioOnly`
+  /// branch of [initState] set it on open, [_enableAudioMode]/
+  /// [_disableAudioMode] set it on a manual toggle, and
+  /// [_applyModeForCurrentChannel] both reads and rewrites it on every zap --
+  /// it is exactly the `current` a zap's own re-decision needs, since a
+  /// detected lock and a manual choice behave differently once the person
+  /// moves on to another channel.
+  AudioModeReason _audioModeReason = AudioModeReason.none;
 
   /// Drives the quick channel list so it can be centred on the current channel.
   ///
@@ -238,6 +252,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (widget.initialAudioOnly) {
       _audioOnlyMode = true;
       _isAudioModeActive = true;
+      // This is a rejoin of a session that was already running -- nothing
+      // here classified it. Ask `peek` (synchronous, no network) whether the
+      // channel would have locked on its own; if so a later zap away from it
+      // must not carry the audio mode along. Anything else --
+      // genuinely unclassifiable, or web, where `peek` never runs -- is
+      // treated as a user choice, matching how this app behaved before mode
+      // ever un-stuck itself on a zap: audio simply followed.
+      final verdict =
+          kIsWeb ? null : StreamKindClassifier.peek(_currentChannel);
+      _audioModeReason = (verdict != null && decideMode(verdict).audio)
+          ? AudioModeReason.detected
+          : AudioModeReason.user;
     } else if (!kIsWeb) {
       // Web classification/probing is out of scope (CORS; RESEARCH.md) --
       // web channels always open exactly as before.
@@ -282,6 +308,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (!decision.audio) return;
 
     _audioOnlyMode = true;
+    _audioModeReason = AudioModeReason.detected;
     // `_startNativeAudio` reads `_playerKey.currentState` and calls
     // `setState`, neither of which is safe to do from `initState` itself --
     // deferred to the first post-frame callback. The video player never
@@ -315,6 +342,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       return;
     }
 
+    _audioModeReason = AudioModeReason.detected;
     await _enterAudioModeState();
     if (!mounted || generation != _modeGeneration) return;
     await _startNativeAudio();
@@ -694,6 +722,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       final error = NativeAudioService.lastError;
       if (error != null) _showAudioError(error);
     } else {
+      // Falling back to video -- whatever reason got this channel into
+      // audio mode no longer applies to it.
+      _audioModeReason = AudioModeReason.none;
       setState(() {
         _audioOnlyMode = false;
         _isBuffering = false;
@@ -707,6 +738,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // A manual toggle always wins over a still-in-flight `_resolveModeAsync`
     // from this same open -- see [_modeGeneration]'s doc comment.
     _modeGeneration++;
+    _audioModeReason = AudioModeReason.user;
 
     if (kIsWeb) {
       await _enterAudioModeState();
@@ -729,6 +761,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // auto-resolve, so it can never re-enter audio mode out from under a
     // user who just switched back to video.
     _modeGeneration++;
+    _audioModeReason = AudioModeReason.none;
 
     if (_isAudioModeActive) {
       await NativeAudioService.stop();
@@ -878,7 +911,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _syncDerivedPlaybackState();
     _followCurrentChannelIfVisible();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
-    _switchAudioChannelIfNeeded();
+    unawaited(_applyModeForCurrentChannel());
   }
 
   void _playPreviousChannel() {
@@ -896,7 +929,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _syncDerivedPlaybackState();
     _followCurrentChannelIfVisible();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
-    _switchAudioChannelIfNeeded();
+    unawaited(_applyModeForCurrentChannel());
   }
 
   void _toggleChannelList() {
@@ -930,7 +963,158 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     });
     _syncDerivedPlaybackState();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
-    _switchAudioChannelIfNeeded();
+    unawaited(_applyModeForCurrentChannel());
+  }
+
+  /// Re-decides the mode for whatever channel `_currentChannel` now points
+  /// at, and carries out the transition. Called by every zap path
+  /// (`_playNextChannel`, `_playPreviousChannel`, `_selectChannel`) in place
+  /// of unconditionally calling [_switchAudioChannelIfNeeded] -- without
+  /// this, audio mode follows every zap regardless of the target: a locked
+  /// channel drags every later channel into audio, and zapping into a
+  /// detectable radio from video never switches at all, because
+  /// `UnifiedVideoPlayer` keeps the same `GlobalKey` across a zap and just
+  /// swaps its URL.
+  ///
+  /// Generation-guarded exactly like [_resolveModeAsync]: a rapid second zap
+  /// bumps [_modeGeneration] again, and every checkpoint below bails the
+  /// moment it no longer matches, so only the last zap's decision is ever
+  /// applied.
+  Future<void> _applyModeForCurrentChannel() async {
+    final generation = ++_modeGeneration;
+    final channel = _currentChannel;
+    final priorReason = _audioModeReason;
+
+    if (!kIsWeb) {
+      final verdict = StreamKindClassifier.peek(channel);
+      if (verdict != null) {
+        await _finishZap(verdict,
+            priorReason: priorReason, generation: generation, probeMs: 0);
+        return;
+      }
+    }
+
+    if (kIsWeb) {
+      // Web never classifies (CORS; out of scope, same as every other
+      // phase) -- treated exactly like an undecidable verdict, so the
+      // target never locks and only a user-chosen current mode carries
+      // forward, same as web's behaviour before this feature existed.
+      await _finishZap(StreamKindVerdict.unknown,
+          priorReason: priorReason, generation: generation, probeMs: 0);
+      return;
+    }
+
+    // A genuine miss needs a network round trip, so the channel being left
+    // must not keep playing audio for a target that hasn't been decided yet
+    // -- that would let `_audioOnlyMode == true` sit alongside
+    // `_modeResolved == false`, which `_modeResolved`'s own doc comment
+    // rules out. Tear down first, then mark unresolved; the placeholder
+    // this shows is the same channel-logo widget a fresh open with a miss
+    // already shows.
+    //
+    // `_isAudioModeActive` is cleared *before* the `stop()` await for the
+    // same reason `_finishZap`'s audio -> video branch does: stopping the
+    // native side round-trips back into `controlStream` as its own
+    // `stopRequested` event, which reentrantly calls `_disableAudioMode()`
+    // while it still reads `_isAudioModeActive == true` -- bumping
+    // `_modeGeneration` out from under this very call and making the
+    // generation check below discard the probe this method is about to run.
+    if (_isAudioModeActive) {
+      _isAudioModeActive = false;
+      await NativeAudioService.stop();
+      if (!mounted || generation != _modeGeneration) return;
+    }
+    if (!mounted || generation != _modeGeneration) return;
+    setState(() {
+      _audioOnlyMode = false;
+      _modeResolved = false;
+    });
+    _syncDerivedPlaybackState();
+
+    final stopwatch = Stopwatch()..start();
+    final verdict = await StreamKindClassifier.classify(channel);
+    stopwatch.stop();
+    await _finishZap(verdict,
+        priorReason: priorReason,
+        generation: generation,
+        probeMs: stopwatch.elapsedMilliseconds);
+  }
+
+  /// Carries out whichever of the four before/after mode combinations
+  /// [decideModeForZap] calls for, and restores [_modeResolved] to `true`
+  /// on every exit -- a peek hit never touched it, and a miss's probe in
+  /// [_applyModeForCurrentChannel] left it `false` until now.
+  Future<void> _finishZap(
+    StreamKindVerdict verdict, {
+    required AudioModeReason priorReason,
+    required int generation,
+    required int probeMs,
+  }) async {
+    if (!mounted || generation != _modeGeneration) return;
+
+    final zap = decideModeForZap(current: priorReason, verdict: verdict);
+    _logModeDecision(zap.decision, probeMs: probeMs);
+    final wasAudio = _isAudioModeActive;
+    _audioModeReason = zap.reason;
+
+    if (wasAudio && zap.decision.audio) {
+      // audio -> audio: the same NativeAudioService session just needs a
+      // new source.
+      await _switchAudioChannelIfNeeded();
+      return;
+    }
+
+    if (!wasAudio && zap.decision.audio) {
+      // video -> audio: `_enterAudioModeState` stops and unmounts whatever
+      // video engine was playing (no double playback under the new audio)
+      // before showing the placeholder, then `_startNativeAudio` starts the
+      // new source -- the same two-step split a fresh audio-locked open
+      // already uses.
+      await _enterAudioModeState();
+      if (!mounted || generation != _modeGeneration) return;
+      await _startNativeAudio();
+      return;
+    }
+
+    if (wasAudio && !zap.decision.audio) {
+      // audio -> video: symmetric with `_disableAudioMode` -- stop native
+      // audio, then let `_buildBody` mount a fresh `UnifiedVideoPlayer` for
+      // `_currentChannel` (`autoPlay: true` starts it; the `play()` call
+      // below is the same no-op-in-practice defensive call
+      // `_disableAudioMode` already makes, kept for the same reason).
+      //
+      // `_isAudioModeActive` is cleared *before* the `stop()` await, not
+      // after: stopping the native side round-trips through Android back
+      // into `controlStream` as its own `stopRequested` event (the same
+      // path the notification's Stop button uses), which this page's
+      // listener turns into a reentrant `_disableAudioMode()` call whenever
+      // it still reads `_isAudioModeActive == true`. Clearing it first makes
+      // that reentrant call a no-op instead of a second, competing state
+      // change that would bump `_modeGeneration` again and make this call
+      // discard the very decision it was about to apply.
+      _isAudioModeActive = false;
+      await NativeAudioService.stop();
+      if (!mounted || generation != _modeGeneration) return;
+      try {
+        _playerKey.currentState?.play();
+      } catch (_) {}
+      setState(() {
+        _audioOnlyMode = false;
+        _modeResolved = true;
+      });
+      _syncDerivedPlaybackState();
+      return;
+    }
+
+    // video -> video: nothing to switch -- `UnifiedVideoPlayer` already
+    // reacts to `_currentChannel` changing on its own (`didUpdateWidget` ->
+    // `_switchToUrl`) from the `setState` the zap method itself already
+    // made. The only thing this call still owes is `_modeResolved`, which a
+    // miss's probe (and only a miss) left `false`.
+    if (!_modeResolved) {
+      setState(() => _modeResolved = true);
+      _syncDerivedPlaybackState();
+    }
   }
 
   /// When in audio-only mode, tell NativeAudioService to switch to the

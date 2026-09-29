@@ -161,6 +161,99 @@ void main() {
     });
   });
 
+  group('decideModeForZap', () {
+    const strongAudio = StreamKindVerdict(
+      StreamKind.audioOnly,
+      KindConfidence.strong,
+      KindSource.radioAttribute,
+    );
+    const provisionalAudio = StreamKindVerdict(
+      StreamKind.audioOnly,
+      KindConfidence.provisional,
+      KindSource.hlsMasterCodecs,
+    );
+    const video = StreamKindVerdict(
+      StreamKind.video,
+      KindConfidence.strong,
+      KindSource.hlsMasterCodecs,
+    );
+
+    test('a strong-audio target locks regardless of the current reason', () {
+      for (final current in AudioModeReason.values) {
+        final zap = decideModeForZap(current: current, verdict: strongAudio);
+        expect(zap.decision.audio, isTrue, reason: '$current');
+        expect(zap.decision.locked, isTrue, reason: '$current');
+      }
+    });
+
+    test(
+        'a strong-audio target carries a user override forward as user, '
+        'not detected', () {
+      final zap = decideModeForZap(
+        current: AudioModeReason.user,
+        verdict: strongAudio,
+      );
+      expect(zap.reason, AudioModeReason.user);
+    });
+
+    test(
+        'a strong-audio target reached with no prior user override is '
+        'recorded as detected', () {
+      for (final current in [AudioModeReason.none, AudioModeReason.detected]) {
+        final zap = decideModeForZap(current: current, verdict: strongAudio);
+        expect(zap.reason, AudioModeReason.detected, reason: '$current');
+      }
+    });
+
+    test(
+        'a detected-audio channel zapping to a non-strong target falls back '
+        'to video, unlocked', () {
+      for (final verdict in [video, provisionalAudio, StreamKindVerdict.unknown]) {
+        final zap = decideModeForZap(
+          current: AudioModeReason.detected,
+          verdict: verdict,
+        );
+        expect(zap.decision.audio, isFalse);
+        expect(zap.decision.locked, isFalse);
+        expect(zap.reason, AudioModeReason.none);
+      }
+    });
+
+    test(
+        'a channel already in video (no prior audio) zapping to a '
+        'non-strong target stays in video', () {
+      final zap = decideModeForZap(
+        current: AudioModeReason.none,
+        verdict: video,
+      );
+      expect(zap.decision.audio, isFalse);
+      expect(zap.reason, AudioModeReason.none);
+    });
+
+    test(
+        'a user-chosen audio channel zapping to a non-strong target stays '
+        'in audio, unlocked -- today\'s behaviour', () {
+      for (final verdict in [video, provisionalAudio, StreamKindVerdict.unknown]) {
+        final zap = decideModeForZap(
+          current: AudioModeReason.user,
+          verdict: verdict,
+        );
+        expect(zap.decision.audio, isTrue, reason: '$verdict');
+        expect(zap.decision.locked, isFalse, reason: '$verdict');
+        expect(zap.reason, AudioModeReason.user, reason: '$verdict');
+      }
+    });
+
+    test('a user-chosen target still carries the verdict\'s own reason text',
+        () {
+      final zap = decideModeForZap(
+        current: AudioModeReason.user,
+        verdict: video,
+      );
+      expect(zap.decision.reason, video.toString());
+    });
+  });
+
   group('playerBodyFor', () {
     // This is the precedence `PlayerPage._buildBody` applies, and it is a
     // real regression case: a channel the async probe locked into audio used
