@@ -54,6 +54,7 @@
   "noChannelsFound": "Keine Kanäle gefunden",
   "switchToVideo": "Zu Video wechseln",
   "audioOnlyMode": "Nur-Audio-Modus",
+  "audioOnlyChannel": "Nur-Audio-Kanal",
   "unknownError": "Unbekannter Fehler",
   "nativeBackgroundAudio": "Hintergrund-Audio",
   "notificationControlsHint": "Benachrichtigungssteuerung zum Abspielen/Pausieren verwenden",

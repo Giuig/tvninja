@@ -198,6 +198,9 @@ class AppLocalizationsEs extends AppLocalizations {
   String get audioOnlyMode => 'Modo solo audio';
 
   @override
+  String get audioOnlyChannel => 'Canal solo de audio';
+
+  @override
   String get unknownError => 'Error desconocido';
 
   @override

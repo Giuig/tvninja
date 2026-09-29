@@ -83,6 +83,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// moves on to another channel.
   AudioModeReason _audioModeReason = AudioModeReason.none;
 
+  /// Whether the current channel is locked into audio mode -- the
+  /// classifier decided it from the channel's own evidence, not the user's
+  /// own toggle. Derived rather than stored, so it can never drift out of
+  /// step with [_audioOnlyMode]/[_audioModeReason]: a channel is only ever
+  /// locked while it is also in audio mode ([AudioModeReason.detected] is
+  /// never set without [decideMode]/[decideModeForZap] having already
+  /// required [_audioOnlyMode] to be true for that same channel).
+  ///
+  /// A locked channel hides the manual audio/video toggle (there is nothing
+  /// to switch to -- the video player was never mounted, see `_buildBody`)
+  /// and changes how a stop or a failed start are handled: neither may fall
+  /// into video, only a plain [AudioModeReason.user] toggle does that.
+  bool get _audioLocked =>
+      _audioOnlyMode && _audioModeReason == AudioModeReason.detected;
+
   /// Drives the quick channel list so it can be centred on the current channel.
   ///
   /// The list is only mounted while [_channelListExpanded] is true, so every use
@@ -509,7 +524,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             break;
           case PlaybackControl.stop:
             if (_isAudioModeActive) {
-              _disableAudioMode();
+              // A locked channel has no video to fall back to -- the player
+              // was never mounted (see `_buildBody`) -- so the notification's
+              // Stop button leaves it on the audio placeholder, stopped,
+              // rather than calling
+              // `_disableAudioMode()` (which would try to show video that
+              // was never there). A plain manual audio toggle keeps today's
+              // behaviour: Stop turns it off entirely.
+              if (_audioLocked) {
+                _stopLockedAudio();
+              } else {
+                _disableAudioMode();
+              }
             }
             break;
         }
@@ -681,15 +707,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   /// Starts native audio playback for the current channel, reconciling
-  /// [_isAudioModeActive]/[_isBuffering] on success and falling back to the
-  /// video player on failure.
+  /// [_isAudioModeActive]/[_isBuffering] on success. On failure: falls back
+  /// to the video player for a plain manual toggle, or shows the error
+  /// screen for a [_audioLocked] channel, which has no video player to fall
+  /// back to (see [_showAudioError]'s call site below).
   ///
   /// The other half of the old `_enableAudioMode` (see
   /// [_enterAudioModeState]) -- kept separate because this is the part that
   /// needs `_playerKey.currentState` (meaningless before the first frame) and
   /// `NativeAudioService`, which [_enterAudioModeState] never touches. Used
-  /// both by the manual toggle and by a channel [decideMode] locks into audio
-  /// at open, from a post-frame callback in either case.
+  /// by the manual toggle, by a channel [decideMode]/[decideModeForZap] locks
+  /// into audio at open or on a zap, and by [_togglePlayPause]'s play button
+  /// and the error screen's Retry button when audio mode is showing but
+  /// nothing is actually running (stopped, or a start that hasn't landed).
   ///
   /// `NativeAudioService.play` never throws (it catches everything
   /// internally and returns `false`), so the only new risk this method's
@@ -721,6 +751,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // `_isAudioModeActive` was true, so the error listener dropped it.
       final error = NativeAudioService.lastError;
       if (error != null) _showAudioError(error);
+    } else if (_audioLocked) {
+      // Locked: a channel that locks audio never falls into video -- it
+      // never mounts `UnifiedVideoPlayer` in the first place, see
+      // `_buildBody` -- so a failed start shows the same error screen the
+      // video path uses instead of the `else` branch below's video
+      // fallback -- which is fine for a plain manual toggle (unlocked; it
+      // remounts a fresh video player for a channel that has one to show),
+      // but would be a dead end here. `NativeAudioService.play` never sets
+      // `lastError` for this failure shape (a
+      // `_CancellationException`/`PlatformException`/timeout caught inside
+      // `play` itself, before anything reaches the error stream) so there
+      // is no specific message to show -- a generic one covers it, same as
+      // any other unclassified failure.
+      _showAudioError(NativeAudioService.lastError ??
+          AppLocalizations.of(context)!.unknownError);
     } else {
       // Falling back to video -- whatever reason got this channel into
       // audio mode no longer applies to it.
@@ -787,6 +832,34 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // follow the user into video, where clearing it is what mounts the player.
       _hasError = false;
       _errorMessage = '';
+    });
+    _syncDerivedPlaybackState();
+  }
+
+  /// The notification's Stop button on a *locked* channel.
+  ///
+  /// Unlike [_disableAudioMode], this never leaves audio mode: the page
+  /// stays on the audio placeholder, stopped, with its play button live to
+  /// restart the same channel (see
+  /// [_togglePlayPause]) -- there is no video to fall back to anyway, since
+  /// the video player is never mounted for a locked channel (`_buildBody`).
+  /// [_audioOnlyMode] and [_modeResolved] are therefore left exactly as
+  /// they were; only the "is native audio actually running" state changes.
+  ///
+  /// `_isAudioModeActive` is cleared *before* the `stop()` await, for the
+  /// same reason [_disableAudioMode] does it: `NativeAudioService.stop()`
+  /// round-trips through Android back into this page's own `controlStream`
+  /// listener as its own `stopRequested` event -- the exact event that
+  /// leads here in the first place -- and clearing the flag first makes
+  /// that echo's own `if (_isAudioModeActive)` guard skip it, so this
+  /// method cannot be re-entered by its own stop call.
+  Future<void> _stopLockedAudio() async {
+    _isAudioModeActive = false;
+    await NativeAudioService.stop();
+    if (!mounted) return;
+    setState(() {
+      _isPlaying = false;
+      _isBuffering = false;
     });
     _syncDerivedPlaybackState();
   }
@@ -889,19 +962,33 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// buffering gate in this batch.
   bool get _canZap => _isFullscreen && _channels.length > 1;
 
+  // The branching itself is `playPauseActionFor` (`player_mode.dart`) -- see
+  // its own doc comment for why the `startNativeAudio` case exists and what
+  // it fixes. Keep this switch as the single place that turns each outcome
+  // into a real call, matching `_buildBody`/`playerBodyFor`'s split.
   void _togglePlayPause() {
-    if (_isAudioModeActive) {
-      if (_isPlaying) {
+    switch (playPauseActionFor(
+      isAudioModeActive: _isAudioModeActive,
+      audioOnlyMode: _audioOnlyMode,
+      isPlaying: _isPlaying,
+    )) {
+      case PlayPauseAction.pauseAudio:
         NativeAudioService.pause();
-      } else {
+      case PlayPauseAction.resumeAudio:
         NativeAudioService.resume();
-      }
-    } else {
-      if (_isPlaying) {
+      case PlayPauseAction.startNativeAudio:
+        // There is no video player mounted to fall back to here
+        // (`_buildBody` never builds one while `_audioOnlyMode` is true), so
+        // restarting means asking `NativeAudioService` to play again, not
+        // `_playerKey` -- which is exactly what left this button dead
+        // before this fix, for every audio channel, locked or manually
+        // chosen (stopped via the notification's Stop button, or caught
+        // between a fresh start and its own result landing).
+        _startNativeAudio();
+      case PlayPauseAction.pauseVideo:
         _playerKey.currentState?.pause();
-      } else {
+      case PlayPauseAction.playVideo:
         _playerKey.currentState?.play();
-      }
     }
   }
 
@@ -1445,9 +1532,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       isPlaying: _isPlaying,
       onPlayPause: _togglePlayPause,
       title: _currentChannel.name,
-      subtitle: _isAudioModeActive
-          ? AppLocalizations.of(context)!.nativeBackgroundAudio
-          : AppLocalizations.of(context)!.audioOnlyMode,
+      // A locked channel gets its own subtitle regardless of whether native
+      // audio happens to be active right now (playing, or stopped via the
+      // notification's Stop button) -- "Audio-only channel" is what actually
+      // explains why there is no video here, where "Native Background
+      // Audio"/"Audio Only Mode" describe a *manual* toggle's own state and
+      // would be misleading for a channel the user never chose to switch.
+      subtitle: _audioLocked
+          ? AppLocalizations.of(context)!.audioOnlyChannel
+          : _isAudioModeActive
+              ? AppLocalizations.of(context)!.nativeBackgroundAudio
+              : AppLocalizations.of(context)!.audioOnlyMode,
       hintText: _isBuffering && !_isPlaying
           ? AppLocalizations.of(context)!.loadingStream
           : _isAudioModeActive
@@ -1507,7 +1602,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 // distinctive feature. The menu is removed rather than left
                 // wrapping nothing — re-add it once there is more than one
                 // thing to put in it (the sleep timer).
-                if (hasMenuItems)
+                //
+                // Hidden while `_audioLocked`: the classifier decided this
+                // channel from its own evidence, not the user, so there is
+                // nothing to switch to -- the video player was never mounted
+                // (`_buildBody`) and never will be for this channel. Showing
+                // a "switch to video" control that leads nowhere would be
+                // worse than no control at all.
+                if (hasMenuItems && !_audioLocked)
                   IconButton(
                     onPressed: _toggleAudioOnlyMode,
                     icon: Icon(
@@ -1955,11 +2057,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   _errorMessage = '';
                 });
                 _syncDerivedPlaybackState();
-                // Audio mode has no player to remount: the placeholder comes
-                // back instead, so the stream has to be asked for again.
-                if (_audioOnlyMode && _isAudioModeActive) {
-                  _switchAudioChannelIfNeeded();
-                  return;
+                // The branching itself is `retryActionFor` (`player_mode.dart`)
+                // -- see its own doc comment for the dead-button case it
+                // fixes. Audio mode has no player to remount: the placeholder
+                // comes back instead, so the stream has to be asked for again
+                // -- from `NativeAudioService` if nothing is running, or by
+                // asking the still-active session to reopen the same URL
+                // otherwise.
+                switch (retryActionFor(
+                  audioOnlyMode: _audioOnlyMode,
+                  isAudioModeActive: _isAudioModeActive,
+                )) {
+                  case RetryAction.switchAudioChannel:
+                    _switchAudioChannelIfNeeded();
+                    return;
+                  case RetryAction.startNativeAudio:
+                    _startNativeAudio();
+                    return;
+                  case RetryAction.retryVideo:
+                    break;
                 }
                 // `_buildBody()` returns `_buildError()` while `_hasError` is
                 // set, so the player is NOT in the tree here and

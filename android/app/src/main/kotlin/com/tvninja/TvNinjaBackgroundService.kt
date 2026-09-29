@@ -345,7 +345,7 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
         // alive, stop tears it down entirely. Matches auraninja's
         // play/pause + stop control set (wrapper_audio_handler.dart).
         val stopAction = NotificationCompat.Action(
-            android.R.drawable.ic_delete,
+            R.drawable.ic_notification_stop,
             "Stop",
             createActionIntent(ACTION_STOP)
         )

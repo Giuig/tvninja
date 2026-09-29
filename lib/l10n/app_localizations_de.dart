@@ -200,6 +200,9 @@ class AppLocalizationsDe extends AppLocalizations {
   String get audioOnlyMode => 'Nur-Audio-Modus';
 
   @override
+  String get audioOnlyChannel => 'Nur-Audio-Kanal';
+
+  @override
   String get unknownError => 'Unbekannter Fehler';
 
   @override

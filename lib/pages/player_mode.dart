@@ -172,3 +172,50 @@ PlayerBody playerBodyFor({
   if (audioOnlyMode) return PlayerBody.audio;
   return PlayerBody.video;
 }
+
+/// What `PlayerPage._togglePlayPause`'s single button should do, given the
+/// three flags it already reads. [startNativeAudio] is the case a locked
+/// channel's notification Stop leaves behind (`_isAudioModeActive == false`
+/// while `audioOnlyMode` stays `true`) and that a fresh audio-locked open
+/// can also pass through, briefly, before its own start lands -- the button
+/// used to unconditionally call the (unmounted, in audio mode) video
+/// player's `play()` here, a no-op that left it dead for every audio
+/// channel, locked or manually chosen.
+enum PlayPauseAction { pauseAudio, resumeAudio, startNativeAudio, pauseVideo, playVideo }
+
+/// Pure counterpart of `_togglePlayPause`'s branching, extracted for the
+/// same reason [playerBodyFor] was: the real bug above was exactly this
+/// kind of precedence mistake, and a real `PlayerPage` widget test needs a
+/// live `NativeAudioService`/platform channels that neither `flutter_test`
+/// nor a loopback server can stand in for.
+PlayPauseAction playPauseActionFor({
+  required bool isAudioModeActive,
+  required bool audioOnlyMode,
+  required bool isPlaying,
+}) {
+  if (isAudioModeActive) {
+    return isPlaying ? PlayPauseAction.pauseAudio : PlayPauseAction.resumeAudio;
+  }
+  if (audioOnlyMode) return PlayPauseAction.startNativeAudio;
+  return isPlaying ? PlayPauseAction.pauseVideo : PlayPauseAction.playVideo;
+}
+
+/// What the error screen's Retry button should do. [startNativeAudio] is
+/// the audio-mode-but-inactive case -- a locked channel whose native start
+/// failed, or a manual toggle stopped the same way -- where the pre-Phase-7
+/// code called `_switchAudioChannelIfNeeded`, itself a silent no-op while
+/// `_isAudioModeActive` is false, leaving Retry dead in exactly the case it
+/// exists for.
+enum RetryAction { switchAudioChannel, startNativeAudio, retryVideo }
+
+/// Pure counterpart of the error screen's Retry branching, extracted for
+/// the same reason [playPauseActionFor] and [playerBodyFor] were.
+RetryAction retryActionFor({
+  required bool audioOnlyMode,
+  required bool isAudioModeActive,
+}) {
+  if (!audioOnlyMode) return RetryAction.retryVideo;
+  return isAudioModeActive
+      ? RetryAction.switchAudioChannel
+      : RetryAction.startNativeAudio;
+}

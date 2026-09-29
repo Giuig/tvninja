@@ -306,4 +306,91 @@ void main() {
       );
     });
   });
+
+  group('playPauseActionFor', () {
+    test('active and playing pauses the native audio session', () {
+      expect(
+        playPauseActionFor(
+            isAudioModeActive: true, audioOnlyMode: true, isPlaying: true),
+        PlayPauseAction.pauseAudio,
+      );
+    });
+
+    test('active and not playing resumes the native audio session', () {
+      expect(
+        playPauseActionFor(
+            isAudioModeActive: true, audioOnlyMode: true, isPlaying: false),
+        PlayPauseAction.resumeAudio,
+      );
+    });
+
+    // The regression case: a locked channel's notification Stop leaves
+    // exactly this shape -- audioOnlyMode true, isAudioModeActive false --
+    // and the pre-fix code called the (unmounted, in audio mode) video
+    // player's play(), a silent no-op.
+    test(
+        'audio mode but inactive starts native audio, regardless of '
+        'isPlaying', () {
+      expect(
+        playPauseActionFor(
+            isAudioModeActive: false, audioOnlyMode: true, isPlaying: false),
+        PlayPauseAction.startNativeAudio,
+      );
+      expect(
+        playPauseActionFor(
+            isAudioModeActive: false, audioOnlyMode: true, isPlaying: true),
+        PlayPauseAction.startNativeAudio,
+      );
+    });
+
+    test('video mode and playing pauses the video player', () {
+      expect(
+        playPauseActionFor(
+            isAudioModeActive: false, audioOnlyMode: false, isPlaying: true),
+        PlayPauseAction.pauseVideo,
+      );
+    });
+
+    test('video mode and not playing plays the video player', () {
+      expect(
+        playPauseActionFor(
+            isAudioModeActive: false,
+            audioOnlyMode: false,
+            isPlaying: false),
+        PlayPauseAction.playVideo,
+      );
+    });
+  });
+
+  group('retryActionFor', () {
+    test('not in audio mode retries the video player', () {
+      expect(
+        retryActionFor(audioOnlyMode: false, isAudioModeActive: true),
+        RetryAction.retryVideo,
+      );
+      expect(
+        retryActionFor(audioOnlyMode: false, isAudioModeActive: false),
+        RetryAction.retryVideo,
+      );
+    });
+
+    test('audio mode and active switches the audio channel', () {
+      expect(
+        retryActionFor(audioOnlyMode: true, isAudioModeActive: true),
+        RetryAction.switchAudioChannel,
+      );
+    });
+
+    // The regression case: `_switchAudioChannelIfNeeded` itself
+    // early-returns as a no-op while `isAudioModeActive` is false, so the
+    // pre-fix code left Retry dead for exactly this shape -- a locked
+    // channel's failed native start, or a manual toggle stopped the same
+    // way.
+    test('audio mode and inactive starts native audio', () {
+      expect(
+        retryActionFor(audioOnlyMode: true, isAudioModeActive: false),
+        RetryAction.startNativeAudio,
+      );
+    });
+  });
 }

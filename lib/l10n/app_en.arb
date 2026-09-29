@@ -77,6 +77,10 @@
   "noChannelsFound": "No channels found",
   "switchToVideo": "Switch to Video",
   "audioOnlyMode": "Audio Only Mode",
+  "audioOnlyChannel": "Audio-only channel",
+  "@audioOnlyChannel": {
+    "description": "Placeholder subtitle for a channel the app locked into audio mode on its own evidence, with no video to switch to"
+  },
   "unknownError": "Unknown error",
   "nativeBackgroundAudio": "Native Background Audio",
   "notificationControlsHint": "Use notification controls to play/pause",
