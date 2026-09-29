@@ -764,8 +764,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _audioModeReason = AudioModeReason.none;
 
     if (_isAudioModeActive) {
-      await NativeAudioService.stop();
+      // Cleared *before* the `stop()` await, not after: stopping the native
+      // side round-trips through Android back into this page's own control
+      // listener as its own stop event (the same one the notification's Stop
+      // button raises), and that listener calls this very method again while
+      // it is still mid-await if it still reads `_isAudioModeActive == true`.
+      // Clearing it first makes that reentrant call a no-op (its own
+      // `if (_isAudioModeActive)` guard skips straight past the native stop)
+      // instead of a second, redundant pass through generation bump, native
+      // stop and this state's `setState`.
       _isAudioModeActive = false;
+      await NativeAudioService.stop();
     }
 
     try {
