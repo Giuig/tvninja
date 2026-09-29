@@ -59,3 +59,31 @@ PlayerModeDecision decideMode(StreamKindVerdict verdict) {
     reason: verdict.toString(),
   );
 }
+
+/// Which body `PlayerPage._buildBody` should show, in the same precedence
+/// `_buildBody` itself applies: an error screen first, then the loading
+/// placeholder while the stream's kind is still being decided, then
+/// audio-vs-video.
+enum PlayerBody { error, resolving, audio, video }
+
+/// Pure counterpart of `PlayerPage._buildBody`'s branching, pulled out so the
+/// precedence above can be unit tested without a full `PlayerPage` widget --
+/// one needs a live `NativeAudioService` and platform channels that neither
+/// `flutter_test` nor a loopback server can stand in for.
+///
+/// This precedence is exactly what a real defect got wrong: `_buildBody`
+/// checks "still resolving" (`resolving`) before "audio or video", so a
+/// channel whose kind lock never flipped `modeResolved` to `true` stayed on
+/// the `resolving` placeholder forever, even while audio was already
+/// playing underneath. See `_enterAudioModeState`'s doc comment in
+/// `player_page.dart` for where that flip now happens.
+PlayerBody playerBodyFor({
+  required bool hasError,
+  required bool modeResolved,
+  required bool audioOnlyMode,
+}) {
+  if (hasError) return PlayerBody.error;
+  if (!modeResolved) return PlayerBody.resolving;
+  if (audioOnlyMode) return PlayerBody.audio;
+  return PlayerBody.video;
+}

@@ -160,4 +160,57 @@ void main() {
       );
     });
   });
+
+  group('playerBodyFor', () {
+    // This is the precedence `PlayerPage._buildBody` applies, and it is a
+    // real regression case: a channel the async probe locked into audio used
+    // to leave `modeResolved` false forever, so `_buildBody` kept returning
+    // the `resolving` placeholder even though audio was already playing.
+    // `hasError` and `!modeResolved` must each win over `audioOnlyMode`, in
+    // that order.
+    test('an error always wins, regardless of the other two flags', () {
+      expect(
+        playerBodyFor(
+            hasError: true, modeResolved: true, audioOnlyMode: true),
+        PlayerBody.error,
+      );
+      expect(
+        playerBodyFor(
+            hasError: true, modeResolved: false, audioOnlyMode: false),
+        PlayerBody.error,
+      );
+    });
+
+    test(
+        'still resolving shows the loading placeholder even when '
+        'audioOnlyMode is already true -- the exact shape of the regression',
+        () {
+      expect(
+        playerBodyFor(
+            hasError: false, modeResolved: false, audioOnlyMode: true),
+        PlayerBody.resolving,
+      );
+      expect(
+        playerBodyFor(
+            hasError: false, modeResolved: false, audioOnlyMode: false),
+        PlayerBody.resolving,
+      );
+    });
+
+    test('resolved and audio-only shows the audio placeholder', () {
+      expect(
+        playerBodyFor(
+            hasError: false, modeResolved: true, audioOnlyMode: true),
+        PlayerBody.audio,
+      );
+    });
+
+    test('resolved and not audio-only shows video', () {
+      expect(
+        playerBodyFor(
+            hasError: false, modeResolved: true, audioOnlyMode: false),
+        PlayerBody.video,
+      );
+    });
+  });
 }

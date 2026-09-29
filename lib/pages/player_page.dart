@@ -62,10 +62,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// [_disableAudioMode]) so a still-in-flight [_resolveModeAsync] can tell
   /// it has been superseded and must not overwrite what the user just chose.
   ///
-  /// This is the generation counter `rules/dart.md`'s async-state-discipline
-  /// rule requires for the `await`s [_resolveModeAsync] introduces --
-  /// captured before those awaits, re-checked after each one, exactly like
-  /// `ExoEngine._openGeneration`.
+  /// Adding an `await` to code that used to finish synchronously opens a
+  /// window where a later, faster caller can move the state on before the
+  /// first `await` returns -- so every `await` in [_resolveModeAsync] needs
+  /// this counter captured before it and re-checked after, exactly like
+  /// `ExoEngine._openGeneration` guards the same class of race there.
   int _modeGeneration = 0;
 
   /// Drives the quick channel list so it can be centred on the current channel.
@@ -294,11 +295,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// The async counterpart of [_resolveInitialMode], for a channel [peek]
   /// couldn't answer synchronously.
   ///
-  /// Generation-guarded per `rules/dart.md`'s async-state-discipline rule: a
-  /// manual toggle bumps [_modeGeneration] (see [_enableAudioMode],
-  /// [_disableAudioMode]) specifically so it always wins over a probe that is
-  /// still in flight when the user acts, rather than this method clobbering
-  /// whatever the user just chose once its own await finally resolves.
+  /// Generation-guarded: a manual toggle bumps [_modeGeneration] (see
+  /// [_enableAudioMode], [_disableAudioMode]) specifically so it always wins
+  /// over a probe that is still in flight when the user acts, rather than
+  /// this method clobbering whatever the user just chose once its own await
+  /// finally resolves.
   Future<void> _resolveModeAsync() async {
     final generation = _modeGeneration;
     final stopwatch = Stopwatch()..start();
@@ -597,10 +598,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// Callers that can fail partway (the manual toggle, [_enableAudioMode])
   /// wrap this together with [_startNativeAudio] in their own try/catch,
   /// exactly as the two were one method before this split.
+  ///
+  /// Also the single place that flips [_modeResolved] to `true` for a channel
+  /// that is entering audio mode -- deliberately in the *same* `setState` as
+  /// [_audioOnlyMode], so the two fields change on the same frame and
+  /// `_buildBody` never has a moment where the mode is "resolved" but still
+  /// reads as video (or the channel-logo placeholder). [_resolveModeAsync]
+  /// used to call this without that guarantee and leave [_modeResolved]
+  /// false forever on the audio-lock path -- every channel it classified as
+  /// audio via the async probe (not [_resolveInitialMode]'s synchronous
+  /// `peek` hit) stayed stuck on the loading placeholder while audio played
+  /// underneath, because `_buildBody` checks `!_modeResolved` before it ever
+  /// looks at [_audioOnlyMode]. Setting it here, rather than at each call
+  /// site, means every path into audio mode -- the async resolve, the manual
+  /// toggle, and any future caller -- gets it for free.
   Future<void> _enterAudioModeState() async {
     if (kIsWeb) {
       setState(() {
         _audioOnlyMode = true;
+        _modeResolved = true;
       });
       // Inert today twice over — this branch is unreachable while the toggle
       // that calls it is gated on `!kIsWeb`, and `setFullscreenVideoMode` itself
@@ -616,6 +632,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // called — so the user sees loading feedback from the very first frame.
     setState(() {
       _audioOnlyMode = true;
+      _modeResolved = true;
       _isBuffering = true;
       // Switching mode is a fresh attempt. A video error left set here kept
       // `_buildBody()` on the error screen while audio played behind it.
@@ -1602,21 +1619,27 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   Widget _buildBody() {
-    if (_hasError) {
-      return _buildError();
-    }
-
-    if (!_modeResolved) {
-      // Still classifying (`_resolveModeAsync`) -- neither player mounts
-      // until the decision lands, so a channel that turns out to lock audio
-      // never shows a video player even for one frame. Reuses the same
-      // channel-logo placeholder `UnifiedVideoPlayer` itself shows while
-      // connecting, so this looks like an ordinary load, not a new state.
-      return _buildChannelLogoWidget();
-    }
-
-    if (_audioOnlyMode) {
-      return _buildAudioPlaceholder();
+    // The branching itself is `playerBodyFor` (`player_mode.dart`) -- a pure
+    // function so its precedence can be unit tested directly. Keep this
+    // switch as the single place that turns each outcome into a widget.
+    switch (playerBodyFor(
+      hasError: _hasError,
+      modeResolved: _modeResolved,
+      audioOnlyMode: _audioOnlyMode,
+    )) {
+      case PlayerBody.error:
+        return _buildError();
+      case PlayerBody.resolving:
+        // Still classifying (`_resolveModeAsync`) -- neither player mounts
+        // until the decision lands, so a channel that turns out to lock audio
+        // never shows a video player even for one frame. Reuses the same
+        // channel-logo placeholder `UnifiedVideoPlayer` itself shows while
+        // connecting, so this looks like an ordinary load, not a new state.
+        return _buildChannelLogoWidget();
+      case PlayerBody.audio:
+        return _buildAudioPlaceholder();
+      case PlayerBody.video:
+        break;
     }
 
     final videoPlayer = UnifiedVideoPlayer(
