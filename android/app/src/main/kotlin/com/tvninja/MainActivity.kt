@@ -91,9 +91,9 @@ class MainActivity : FlutterFragmentActivity() {
      * a task *appears* in Recents, not whether a live one is finished, so none
      * of them addresses this.
      *
-     * The one part of the report that WAS a defect is fixed separately: the
-     * screen-on wakelock is no longer held while in PiP. See
-     * player_page.dart's _syncWakelock.
+     * The screen-on wakelock in PiP: dropped 2026-09-17 after this report,
+     * then restored for *playing* video by owner decision 2026-10-29 (pausing
+     * releases it). See lib/pages/screen_wake_policy.dart.
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
