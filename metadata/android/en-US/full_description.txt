@@ -1,0 +1,17 @@
+TvNinja is a minimalist IPTV player for M3U/M3U8 playlists and Xtream Codes accounts, built with Material You design.
+
+TvNinja does not provide any channels: it plays the playlists you add.
+
+Features:
+
+- M3U/M3U8 playlists from a URL
+- Xtream Codes login for Live, VOD and Series
+- Browse the public iptv-org playlists by country, language or category (the adult category is hidden)
+- Favorites on the home screen, search and group filtering
+- Audio-only mode with background playback and media notification controls
+- Pauses automatically when headphones disconnect
+- Picture-in-picture when leaving the fullscreen player
+- Persistent mini-player while browsing the app
+- Dark and light Material You themes with dynamic color
+- Localized in English, Italian, French, German, Spanish and Japanese
+- No ads, no tracking, no Google Play Services, fully open source

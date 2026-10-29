@@ -42,6 +42,14 @@ android {
         jvmTarget = '17'
     }
 
+    // Compress native libs inside the APK: the arm64 split was ~34 MB stored,
+    // over IzzyOnDroid's 30 MB per-APK limit. Same setting as decisioninja.
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     defaultConfig {
         applicationId "io.github.giuig.tvninja"
         minSdk 26
@@ -50,6 +58,12 @@ android {
         versionName pubspecVersionName
         multiDexEnabled true
         manifestPlaceholders = [appIcon: "@mipmap/ic_launcher", appName: "TvNinja", applicationName: "io.flutter.embedding.android.FlutterApplication"]
+    }
+
+    // Required by IzzyOnDroid / F-Droid
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     signingConfigs {
