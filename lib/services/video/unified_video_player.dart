@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'buffering_watchdog.dart';
 import 'engines/exo_engine.dart';
 import 'engines/mpv_engine.dart';
 import 'engines/player_engine.dart';
@@ -184,7 +185,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// Same failure shape, and same remedy, as `ExoEngine._openGeneration`.
   int _loadGeneration = 0;
 
-  Timer? _bufferingWatchdog;
+  late final BufferingWatchdog _bufferingWatchdog;
   bool _isSwitching = false;
   String? _pendingUrl;
 
@@ -249,6 +250,19 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       onRetry: _attemptReconnect,
       onGiveUp: _handleReconnectGiveUp,
     );
+    _bufferingWatchdog = BufferingWatchdog(
+      hasStartedPlaying: () => _hasStartedPlaying,
+      onFirstLoadTimeout: () {
+        if (!mounted) return;
+        _reconnect.cancel();
+        _handleReconnectGiveUp();
+      },
+      onStalled: () {
+        if (!mounted) return;
+        _isReconnecting = true;
+        _reconnect.schedule();
+      },
+    );
     // Both sides start "busy" (see [_lastReportedBusy]), and on web nothing
     // below would ever clear it. Reporting here does: the call defers itself
     // out of the current frame, so telling the parent from initState is safe.
@@ -287,8 +301,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
 
   void _cleanup() {
     _loadGeneration++;
-    _bufferingWatchdog?.cancel();
-    _bufferingWatchdog = null;
+    _bufferingWatchdog.reset();
     _isSwitching = false;
     _pendingUrl = null;
     // Cancels any pending retry timer *and* zeroes the attempt counter — a
@@ -378,8 +391,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       // open()/switchTo() is in flight — its position events must not be
       // counted as first frame of the new stream.
       _hasStartedPlaying = true;
-      _bufferingWatchdog?.cancel();
-      _bufferingWatchdog = null;
+      _bufferingWatchdog.reset();
       // First frame after a reconnect (or a plain successful load) — stop
       // the backoff chain and clear the reconnecting flag.
       _reconnect.reset();
@@ -388,55 +400,13 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     widget.onPositionChanged?.call(position);
   }
 
-  /// How long a stream that has **never started** may buffer before it is
-  /// called dead.
-  ///
-  /// 15s rather than something tighter on purpose: real streams are sometimes
-  /// genuinely slow to start, and the cost of being wrong is a user tapping
-  /// Retry on something that would have worked.
-  static const Duration _firstLoadTimeout = Duration(seconds: 15);
-
-  /// How long an **established** stream may rebuffer before reconnecting.
-  /// Unchanged; this is the value the watchdog always had.
-  static const Duration _rebufferTimeout = Duration(seconds: 20);
-
   void _handleEngineBuffering(bool buffering) {
     final changed = _isBuffering != buffering;
     _setBuffering(buffering);
     if (!changed) return;
-    if (buffering) {
-      _bufferingWatchdog?.cancel();
-      // Two different situations, split on whether a frame was ever seen.
-      //
-      // A stream that **was** playing and stalls is worth recovering: that is
-      // a live channel blipping, and the reconnect chain (2/4/8/16/30s, five
-      // attempts) exists for exactly that.
-      //
-      // A stream that has **never started** is not worth retrying five times.
-      // Each attempt re-armed this same watchdog, so a dead stream took
-      // roughly 160 seconds to reach the error screen — a spinner for most of
-      // three minutes, with nothing to act on. Owner asked for a loading
-      // timeout (2026-09-22); this is it. Going straight to the give-up path
-      // reuses the existing error screen, which already carries a Retry
-      // button and already words itself differently for this case.
-      final firstLoad = !_hasStartedPlaying;
-      _bufferingWatchdog =
-          Timer(firstLoad ? _firstLoadTimeout : _rebufferTimeout, () {
-        if (!mounted) return;
-        // Re-checked rather than trusting the captured value: a stream can
-        // start and stall again inside the window.
-        if (!_hasStartedPlaying) {
-          _reconnect.cancel();
-          _handleReconnectGiveUp();
-          return;
-        }
-        _isReconnecting = true;
-        _reconnect.schedule();
-      });
-    } else {
-      _bufferingWatchdog?.cancel();
-      _bufferingWatchdog = null;
-    }
+    // When a stall has gone on long enough to act on, and what to do then,
+    // lives in [BufferingWatchdog].
+    _bufferingWatchdog.bufferingChanged(buffering);
   }
 
   /// Handles [PlayerEngine.onEngineError] — an out-of-band error the engine
@@ -501,8 +471,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     _reconnect.reset();
     _isReconnecting = false;
 
-    _bufferingWatchdog?.cancel();
-    _bufferingWatchdog = null;
+    _bufferingWatchdog.reset();
 
     _setBuffering(true);
     if (mounted) setState(() => _hasError = false);
