@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tvninja/config/config.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:tvninja/l10n/app_localizations.dart';
+import 'package:tvninja/services/audio_output_service.dart';
 import 'package:tvninja/services/native_audio_service.dart';
 import 'package:tvninja/services/pip_service.dart';
 import 'package:tvninja/services/video/unified_video_player.dart';
@@ -188,6 +189,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   StreamSubscription<PlaybackState>? _playbackStateSubscription;
   StreamSubscription<PlaybackControl>? _controlSubscription;
+  StreamSubscription<void>? _noisySubscription;
   StreamSubscription<bool>? _bufferingSubscription;
   StreamSubscription<String>? _audioErrorSubscription;
   StreamSubscription<bool>? _pipSubscription;
@@ -386,6 +388,27 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         }
       }
     });
+
+    _noisySubscription =
+        AudioOutputService.becomingNoisy.listen((_) => _pauseForNoisyOutput());
+  }
+
+  /// Headphones are disconnecting, so output is about to fall back to the
+  /// speaker: pause whichever mode is active, the way Android expects media
+  /// apps to. Never resumed automatically when they reconnect; the user
+  /// presses play.
+  ///
+  /// Not gated on [_isPlaying]: a stream that is still buffering would
+  /// otherwise start on the speaker a moment later.
+  void _pauseForNoisyOutput() {
+    if (!mounted) return;
+    debugPrint(
+        '[PlayerPage] audio becoming noisy - pausing (audio mode: $_isAudioModeActive)');
+    if (_isAudioModeActive) {
+      NativeAudioService.pause();
+    } else {
+      _playerKey.currentState?.pause();
+    }
   }
 
   @override
@@ -393,6 +416,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _playbackStateSubscription?.cancel();
     _controlSubscription?.cancel();
+    _noisySubscription?.cancel();
     _bufferingSubscription?.cancel();
     _audioErrorSubscription?.cancel();
     _pipSubscription?.cancel();
