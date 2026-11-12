@@ -22,6 +22,7 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.media.session.MediaButtonReceiver
 import java.net.URL
 
 class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListener {
@@ -201,11 +202,6 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
                     }
                 }
             })
-            // No media button receiver: while the session is active the system sends
-            // headset/Bluetooth keys straight to the callback above. A receiver would only be
-            // used once the session is gone (after Stop), and the app has none that can start
-            // playback, so a key press there must go nowhere instead of crashing the app.
-            setMediaButtonReceiver(null)
             isActive = true
         }
         Log.d(TAG, "MediaSession setup complete")
