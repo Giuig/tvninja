@@ -357,6 +357,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     if (!decision.audio) {
       setState(() => _modeResolved = true);
+      // PiP eligibility was last synced while this channel was still
+      // unresolved (`false`, see `_syncPipEligibility`); flipping
+      // `_modeResolved` is what makes it eligible, and nothing else runs
+      // after this point to say so. Without this call Home never entered
+      // picture-in-picture for a video channel opened on a stream-kind cache
+      // miss -- only for the next open, once the verdict was cached.
+      _syncDerivedPlaybackState();
       return;
     }
 
