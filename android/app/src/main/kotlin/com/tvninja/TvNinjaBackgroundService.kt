@@ -13,6 +13,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
 import android.net.wifi.WifiManager
 import android.os.PowerManager
@@ -44,6 +45,11 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
         const val ACTION_PLAY = "io.github.giuig.tvninja.ACTION_PLAY"
         const val ACTION_PAUSE = "io.github.giuig.tvninja.ACTION_PAUSE"
         const val ACTION_STOP = "io.github.giuig.tvninja.ACTION_STOP"
+        // Media-session custom action id for Stop. From Android 13 the system
+        // media controls draw their buttons from the session's playback state
+        // and never draw the standard ACTION_STOP, so Stop has to be offered as
+        // a custom action to be visible there.
+        const val CUSTOM_ACTION_STOP = "io.github.giuig.tvninja.CUSTOM_ACTION_STOP"
         const val ACTION_START = "io.github.giuig.tvninja.ACTION_START"
         const val ACTION_UPDATE_STATE = "io.github.giuig.tvninja.UPDATE_STATE"
         const val EXTRA_TITLE = "extra_title"
@@ -179,6 +185,13 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
                     Log.d(TAG, "MediaSession onStop")
                     TvNinjaPlugin.onPlaybackEvent(mapOf("event" to "stopRequested"))
                 }
+
+                override fun onCustomAction(action: String?, extras: Bundle?) {
+                    Log.d(TAG, "MediaSession onCustomAction: $action")
+                    if (action == CUSTOM_ACTION_STOP) {
+                        TvNinjaPlugin.onPlaybackEvent(mapOf("event" to "stopRequested"))
+                    }
+                }
             })
             isActive = true
         }
@@ -213,6 +226,13 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
                     PlaybackStateCompat.ACTION_PLAY or
                     PlaybackStateCompat.ACTION_PAUSE or
                     PlaybackStateCompat.ACTION_STOP
+                )
+                .addCustomAction(
+                    PlaybackStateCompat.CustomAction.Builder(
+                        CUSTOM_ACTION_STOP,
+                        getString(R.string.notification_action_stop),
+                        R.drawable.ic_notification_stop
+                    ).build()
                 )
                 .build()
         )
@@ -345,8 +365,8 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
         // alive, stop tears it down entirely. Matches auraninja's
         // play/pause + stop control set (wrapper_audio_handler.dart).
         val stopAction = NotificationCompat.Action(
-            android.R.drawable.ic_delete,
-            "Stop",
+            R.drawable.ic_notification_stop,
+            getString(R.string.notification_action_stop),
             createActionIntent(ACTION_STOP)
         )
 
