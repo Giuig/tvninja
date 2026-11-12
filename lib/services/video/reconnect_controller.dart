@@ -3,30 +3,29 @@ import 'dart:math';
 
 /// Engine-agnostic exponential-backoff reconnect controller.
 ///
-/// Modeled on `native_audio_service.dart`'s `_scheduleReconnect()` (background
-/// audio's proven backoff): same schedule — `min(30, 2 * (1 << attempt))` →
-/// 2s / 4s / 8s / 16s / 30s — the same 5-attempt ceiling, and the same
-/// reset-on-success semantics.
+/// Same schedule — `min(30, 2 * (1 << attempt))` → 2s / 4s / 8s / 16s / 30s —
+/// a 5-attempt ceiling, and reset-on-success semantics, for every player that
+/// reconnects a dropped stream.
 ///
-/// Unlike the audio service (static/singleton — one process-wide background
-/// player), this is a plain instantiable class: foreground video needs one
-/// instance per player state (`UnifiedVideoPlayerState`).
+/// Unlike a process-wide service, this is a plain instantiable class: the
+/// foreground video player needs one instance per player state
+/// (`UnifiedVideoPlayerState`), and background audio (`audio_recovery.dart`)
+/// holds one for its singleton.
 ///
 /// Deliberately has **zero engine dependencies** (no `media_kit` /
-/// `video_player` imports) so it can drive both the mpv path (this phase) and
-/// a future ExoPlayer path (a later phase) unchanged.
+/// `video_player` imports) so it can drive the mpv path and the ExoPlayer
+/// path unchanged.
 ///
-/// The native audio service's loop is externally re-triggered: each failed
-/// reconnect attempt causes mpv to emit a fresh `stream.error` event, and
-/// *that* is what calls `_scheduleReconnect()` again. The foreground video
-/// player has no equivalent per-attempt error stream at this layer (only
-/// buffering-watchdog timers), so this controller drives its own chain: once
-/// [schedule] is called, it keeps invoking [onRetry] at increasing backoff
-/// intervals — regardless of whether a given [onRetry] call throws — until
-/// [reset] is called (success, or a fresh user action) or the 5-attempt
-/// ceiling is reached, at which point [onGiveUp] fires once and the chain
-/// stops. [cancel] stops the chain without notifying [onGiveUp] (used on
-/// dispose, where nothing should fire after teardown).
+/// This controller drives its own chain: once [schedule] is called, it keeps
+/// invoking [onRetry] at increasing backoff intervals — regardless of whether a
+/// given [onRetry] call throws — until [reset] is called (success, or a fresh
+/// user action) or the 5-attempt ceiling is reached, at which point
+/// [onGiveUp] fires once and the chain stops. A caller whose [onRetry] returns
+/// before it knows whether the attempt worked (an mpv `open()` returns long
+/// before audio flows) must make [onRetry] wait for the outcome, or the chain
+/// moves on while the attempt is still in progress. [cancel] stops the chain
+/// without notifying [onGiveUp] (used on dispose, where nothing should fire
+/// after teardown).
 class ReconnectController {
   ReconnectController({
     required this.onRetry,

@@ -1,8 +1,8 @@
 import 'dart:async';
-import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:tvninja/services/audio_recovery.dart';
 import 'package:tvninja/services/mpv_options.dart';
 import 'package:tvninja/services/video/stream_diagnostics.dart';
 
@@ -18,6 +18,7 @@ class NativeAudioService {
   static StreamSubscription<bool>? _playerBufferingSubscription;
   static StreamSubscription<bool>? _playerPlayingSubscription;
   static StreamSubscription<bool>? _playerCompletedSubscription;
+  static StreamSubscription<Duration>? _playerPositionSubscription;
   static final _playbackStateController =
       StreamController<PlaybackState>.broadcast();
   static final _metadataController =
@@ -53,8 +54,6 @@ class NativeAudioService {
   static PlaybackState _currentState = PlaybackState();
   static bool _isBuffering = false;
   static String? _currentUrl;
-  static int _reconnectAttempts = 0;
-  static Timer? _reconnectTimer;
   static StreamSubscription<String>? _errorSubscription;
   static int _playRequestId = 0;
   static Completer<void>? _playCanceller;
@@ -67,6 +66,21 @@ class NativeAudioService {
   /// leftover audio session needs [stop] before opening another channel, so a
   /// null URL there leaked the foreground service and its notification.
   static bool _gaveUp = false;
+
+  /// Reconnect chain (2/4/8/16/30 s, five tries), stall detection and the
+  /// decision that a reconnect worked, shared with the video player's pieces.
+  /// A static is fine: the service is a process-wide singleton.
+  static final AudioRecovery _recovery = AudioRecovery(
+    reopen: _reopenCurrentUrl,
+    onGiveUp: () =>
+        // Same wording the video path uses when its reconnects give up.
+        _surfaceError('Stream lost — connection timed out'),
+    onStalled: () {
+      debugPrint('[Audio] Stalled: position stopped moving, reconnecting');
+      _reflectDisconnected();
+    },
+    onRecovered: () => debugPrint('[Audio] Playback recovered'),
+  );
 
   static late Player _audioPlayer;
 
@@ -100,10 +114,12 @@ class NativeAudioService {
     await _playerPlayingSubscription?.cancel();
     await _playerBufferingSubscription?.cancel();
     await _playerCompletedSubscription?.cancel();
+    await _playerPositionSubscription?.cancel();
     await _errorSubscription?.cancel();
 
     // Reattach listeners
     _playerPlayingSubscription = _audioPlayer.stream.playing.listen((playing) {
+      _recovery.playingChanged(playing);
       if (_currentState.isPlaying == playing) return;
       _currentState = _currentState.copyWith(isPlaying: playing);
       _playbackStateController.add(_currentState);
@@ -118,6 +134,7 @@ class NativeAudioService {
 
     _playerBufferingSubscription =
         _audioPlayer.stream.buffering.listen((buffering) {
+      _recovery.bufferingChanged(buffering);
       if (_isBuffering == buffering) return;
       _isBuffering = buffering;
       _bufferingController.add(buffering);
@@ -143,21 +160,32 @@ class NativeAudioService {
       }
     });
 
+    _playerPositionSubscription =
+        _audioPlayer.stream.position.listen(_recovery.positionChanged);
+
     _errorSubscription = _audioPlayer.stream.error.listen((error) {
       debugPrint('[Audio] Stream error: $error');
-      // Immediately reflect disconnected state so UI stops showing "playing"
-      if (_currentState.isPlaying || _currentState.state != PlayerState.buffering) {
-        _isBuffering = true;
-        _currentState = _currentState.copyWith(
-          state: PlayerState.buffering,
-          isPlaying: false,
-        );
-        _playbackStateController.add(_currentState);
-        _bufferingController.add(true);
-      }
+      _reflectDisconnected();
+      // A reconnect attempt that was waiting to hear how it went has its
+      // answer; the chain moves on to its next backoff.
+      _recovery.attemptFailed();
       final url = _currentUrl;
       if (url != null) unawaited(_handleStreamError(url));
     });
+  }
+
+  /// Immediately reflects a lost stream so the UI stops showing "playing".
+  static void _reflectDisconnected() {
+    if (_currentState.isPlaying ||
+        _currentState.state != PlayerState.buffering) {
+      _isBuffering = true;
+      _currentState = _currentState.copyWith(
+        state: PlayerState.buffering,
+        isPlaying: false,
+      );
+      _playbackStateController.add(_currentState);
+      _bufferingController.add(true);
+    }
   }
 
   /// Decides whether a failed stream is worth reconnecting to.
@@ -169,6 +197,11 @@ class NativeAudioService {
   /// the error arrived before background mode was on, no reconnect was
   /// scheduled at all, so the spinner never stopped. Asking the server first
   /// (same probe the video path uses) tells the two apart.
+  ///
+  /// An error that arrives before background mode is on (while [play] is still
+  /// starting the foreground service) takes the same road: the first retry is
+  /// at least two seconds away, by which time [play] has finished, and a [play]
+  /// that fails outright cancels the chain itself.
   static Future<void> _handleStreamError(String url) async {
     // Already reported: a further error event from the same failed stream must
     // not start reconnecting again.
@@ -181,12 +214,8 @@ class NativeAudioService {
 
     if (StreamDiagnostics.isPermanent(probe)) {
       _surfaceError(StreamDiagnostics.userMessage(probe)!);
-    } else if (_isBackgroundMode) {
-      _scheduleReconnect();
     } else {
-      // Nothing would retry from here, so staying on "buffering" is the bug.
-      _surfaceError(StreamDiagnostics.userMessage(probe) ??
-          'Stream not responding — no data received');
+      _recovery.schedule();
     }
   }
 
@@ -194,8 +223,7 @@ class NativeAudioService {
   /// non-buffering state; [play] starts over from it.
   static void _surfaceError(String message) {
     debugPrint('[Audio] Giving up: $message');
-    _reconnectTimer?.cancel();
-    _reconnectAttempts = 0;
+    _recovery.reset();
     // Lets a Retry of the same channel past the same-URL guard at the top of
     // [play]. [_currentUrl] stays set on purpose — see [_gaveUp].
     _gaveUp = true;
@@ -217,39 +245,41 @@ class NativeAudioService {
     _errorController.add(message);
   }
 
-  static void _scheduleReconnect() {
-    _reconnectTimer?.cancel();
-    if (_reconnectAttempts >= 5) {
-      debugPrint('[Audio] Max reconnect attempts reached, giving up');
-      // Same wording the video path uses when its reconnects give up.
-      _surfaceError('Stream lost — connection timed out');
-      return;
-    }
-    final delaySeconds = min(30, 2 * (1 << _reconnectAttempts)); // 2,4,8,16,30
-    debugPrint(
-        '[Audio] Reconnecting in ${delaySeconds}s (attempt ${_reconnectAttempts + 1}/5)');
-    _reconnectTimer = Timer(Duration(seconds: delaySeconds), () async {
-      if (!_isBackgroundMode || _currentUrl == null || _gaveUp) return;
-      _reconnectAttempts++;
-      try {
-        // Emit buffering state so the UI reflects the reconnect attempt
-        _isBuffering = true;
-        _currentState = _currentState.copyWith(
-          state: PlayerState.buffering,
-          isPlaying: false,
-        );
-        _playbackStateController.add(_currentState);
-        _bufferingController.add(true);
+  /// The recovery chain's `reopen`: starts the current URL again.
+  ///
+  /// Works with or without background mode: the notification is only updated
+  /// when the foreground service is up.
+  static Future<void> _reopenCurrentUrl() async {
+    final url = _currentUrl;
+    if (url == null || _gaveUp) return;
+    final requestId = _playRequestId;
+    debugPrint('[Audio] Reconnect attempt ${_recovery.attempt}');
+    try {
+      // Emit buffering state so the UI reflects the reconnect attempt
+      _isBuffering = true;
+      _currentState = _currentState.copyWith(
+        state: PlayerState.buffering,
+        isPlaying: false,
+      );
+      _playbackStateController.add(_currentState);
+      _bufferingController.add(true);
+      if (_isBackgroundMode) {
         await _channel.invokeMethod('updatePlaybackState', {
           'isPlaying': false,
           'isBuffering': true,
           'title': _currentState.metadata?.title ?? 'TV Ninja',
         });
-        await _audioPlayer.open(Media(_currentUrl!), play: true);
-      } catch (e) {
-        debugPrint('[Audio] Reconnect failed: $e');
+        // A zap or a stop during the call above: this attempt is for a stream
+        // nobody is waiting on any more.
+        if (requestId != _playRequestId || url != _currentUrl || _gaveUp) {
+          return;
+        }
       }
-    });
+      await _audioPlayer.open(Media(url), play: true);
+    } catch (e) {
+      debugPrint('[Audio] Reconnect failed: $e');
+      rethrow;
+    }
   }
 
   static void _handleNativeEvent(Map<String, dynamic> event) {
@@ -316,8 +346,7 @@ class NativeAudioService {
       await checkCancelled();
 
       _currentUrl = url;
-      _reconnectAttempts = 0;
-      _reconnectTimer?.cancel();
+      _recovery.reset();
 
       // Reuse or replace the current player.
       // After stop(), _audioPlayer is already a fresh unconfigured Player —
@@ -388,9 +417,12 @@ class NativeAudioService {
       return false;
     } on PlatformException catch (e) {
       debugPrint('[Audio] PlatformException: ${e.message}');
+      // The caller is told this start failed: no reconnect chain may carry on.
+      _recovery.reset();
       return false;
     } catch (e) {
       debugPrint('[Audio] Error: $e');
+      _recovery.reset();
       return false;
     }
   }
@@ -437,9 +469,7 @@ class NativeAudioService {
       _isBackgroundMode = false;
       _currentUrl = null;
       _gaveUp = false;
-      _reconnectAttempts = 0;
-      _reconnectTimer?.cancel();
-      _reconnectTimer = null;
+      _recovery.reset();
       _playCanceller?.complete();
       _playCanceller = null;
       await _playerPlayingSubscription?.cancel();
@@ -448,6 +478,8 @@ class NativeAudioService {
       _playerBufferingSubscription = null;
       await _playerCompletedSubscription?.cancel();
       _playerCompletedSubscription = null;
+      await _playerPositionSubscription?.cancel();
+      _playerPositionSubscription = null;
       await _errorSubscription?.cancel();
       _errorSubscription = null;
       await _audioPlayer.stop();
@@ -490,8 +522,11 @@ class NativeAudioService {
     _playerBufferingSubscription = null;
     await _playerCompletedSubscription?.cancel();
     _playerCompletedSubscription = null;
+    await _playerPositionSubscription?.cancel();
+    _playerPositionSubscription = null;
     await _errorSubscription?.cancel();
     _errorSubscription = null;
+    _recovery.reset();
     _audioPlayer.dispose();
     _audioPlayer = Player();
     _currentState = PlaybackState();
