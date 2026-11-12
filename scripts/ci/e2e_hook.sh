@@ -2,7 +2,9 @@
 # Emulator hook for integration_test/sound_mode_test.dart, started by the shared runner in
 # the background before the test file ($1 = the file name; the environment carries OUT,
 # DEVICE, PKG and LOGCAT). It starts before the test is even built and installed, so it
-# waits for the test's E2E_SOUND_PLAYING marker in logcat first.
+# waits for the test's E2E_SOUND_PLAYING marker first. The marker is read from the
+# `flutter test` output the runner writes to $OUT/<file name>.txt: Dart's debugPrint reaches
+# the flutter tool over the VM service, not logcat, so logcat would never show it.
 #
 # GATING (a failure fails the run), taken while the test is playing:
 #   - dumpsys media_session: the app's session is playing (state=3) and its playback state
@@ -21,6 +23,7 @@ DEVICE=${DEVICE:-emulator-5554}
 PKG=${PKG:?PKG is required}
 LOGCAT=${LOGCAT:-$OUT/logcat.txt}
 MARKER=E2E_SOUND_PLAYING
+TESTOUT="$OUT/${1:-sound_mode_test.dart}.txt"
 WAIT_FOR_MARKER=${E2E_MARKER_TIMEOUT:-600}
 EXTRA="$OUT/summary_extra.md"
 
@@ -34,14 +37,14 @@ fail() {
   failures=$((failures + 1))
 }
 
-echo "hook: waiting up to ${WAIT_FOR_MARKER}s for $MARKER in $LOGCAT"
+echo "hook: waiting up to ${WAIT_FOR_MARKER}s for $MARKER in $TESTOUT"
 seen=0
 for _ in $(seq 1 "$WAIT_FOR_MARKER"); do
-  if [ -f "$LOGCAT" ] && grep -q "$MARKER" "$LOGCAT"; then seen=1; break; fi
+  if [ -f "$TESTOUT" ] && grep -q "$MARKER" "$TESTOUT"; then seen=1; break; fi
   sleep 1
 done
 if [ "$seen" -ne 1 ]; then
-  echo "GATING FAIL: marker $MARKER never appeared in logcat (the test never reached playback)"
+  echo "GATING FAIL: marker $MARKER never appeared in $TESTOUT (the test never reached playback)"
   {
     echo "### sound mode hook"
     echo "- **FAIL**: the test never reached playback, so nothing was checked"
@@ -145,7 +148,7 @@ print("NONE")
 PY
 }
 
-stop_before=$(grep -c 'E2E_STOP_REQUESTED' "$LOGCAT")
+stop_before=$(grep -c 'E2E_STOP_REQUESTED' "$TESTOUT")
 tapped=0
 for mode in expand-notifications expand-settings; do
   adb_ shell cmd statusbar "$mode" > /dev/null 2>&1 || true
@@ -171,9 +174,9 @@ for mode in expand-notifications expand-settings; do
 done
 if [ "$tapped" -eq 1 ]; then
   sleep 4
-  stop_after=$(grep -c 'E2E_STOP_REQUESTED' "$LOGCAT")
+  stop_after=$(grep -c 'E2E_STOP_REQUESTED' "$TESTOUT")
   if [ "$stop_after" -gt "$stop_before" ]; then
-    tap_note "RESULT: the tap reached the app (E2E_STOP_REQUESTED in logcat)"
+    tap_note "RESULT: the tap reached the app (E2E_STOP_REQUESTED in the test output)"
   else
     tap_note "RESULT: the tap did not reach the app (no E2E_STOP_REQUESTED)"
   fi
