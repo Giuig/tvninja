@@ -1,0 +1,53 @@
+name: Android E2E
+
+# Emulator tests (integration_test/) on an API 34 x86_64 image: sound mode is started
+# against a local stand-in station, and scripts/ci/e2e_hook.sh checks the Android side
+# while it plays (the media session offers Stop, the notification exists) and records the
+# audio facts. The job itself lives in ninja_material's shared android-e2e.yml; this file
+# is the thin shim that owns this repo's triggers (underscore = this repo's own trigger,
+# hyphen = shared workflow_call).
+#
+# Never runs on ordinary pull requests: only on manual dispatch, on a PR carrying the
+# `e2e` label, on release tags, and on the `trigger-build` dispatch that version-bump.yml
+# sends after it pushes a tag (a tag pushed with GITHUB_TOKEN starts no workflow by
+# itself). A run takes about 15 minutes.
+#
+# !!! BEFORE THIS BRANCH MERGES: change the `uses:` ref below from
+# !!!   @ci/shared-android-e2e   to   @main
+# !!! The shared workflow is still on a branch of ninja_material (a pull request there);
+# !!! once that is merged, the branch ref is gone or stale. Leaving it breaks the run.
+on:
+  workflow_dispatch:
+    inputs:
+      audio:
+        description: 'Emulator audio option (a: default, b: QEMU_AUDIO_DRV=none, c: -noaudio)'
+        type: choice
+        options: [a, b, c]
+        default: a
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    tags:
+      - 'v*'
+  repository_dispatch:
+    types: [trigger-build]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    # A pull request runs only with the `e2e` label; every other trigger always runs.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'e2e')
+    # TODO(before merge): @ci/shared-android-e2e -> @main (see the header).
+    uses: Giuig/ninja_material/.github/workflows/android-e2e.yml@ci/shared-android-e2e
+    with:
+      app-name: tvninja
+      package: io.github.giuig.tvninja
+      e2e-files: sound_mode_test.dart
+      local-stream: true
+      emulator-audio: ${{ inputs.audio || 'a' }}
