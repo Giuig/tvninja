@@ -12,6 +12,12 @@
 #     only the playback state's custom actions, so this is what makes Stop visible there.
 #   - dumpsys notification: the app's playback notification is posted.
 #
+# SESSION END, taken while the app process is still alive (the test keeps it alive after
+# each stop, as on a phone): after a Stop, and again after a second start and stop, no
+# playback session of the app may stay active, the playback service must be gone and
+# have logged onDestroy, and a second start must leave exactly one session and no
+# binding to the service. STOP_GATING below says whether a failure fails the run.
+#
 # NON-GATING, recorded in $OUT/summary_extra.md and the files next to it:
 #   - the audio facts that bear on system equalizers (dumpsys audio, dumpsys
 #     media.audio_flinger, effect-session broadcasts in logcat);
@@ -26,6 +32,8 @@ MARKER=E2E_SOUND_PLAYING
 TESTOUT="$OUT/${1:-sound_mode_test.dart}.txt"
 WAIT_FOR_MARKER=${E2E_MARKER_TIMEOUT:-600}
 EXTRA="$OUT/summary_extra.md"
+# 1: a failed session-end check fails the run; 0: it is only recorded in the summary.
+STOP_GATING=0
 
 adb_() { adb -s "$DEVICE" "$@"; }
 
@@ -36,6 +44,57 @@ fail() {
   echo "GATING FAIL: $*"
   failures=$((failures + 1))
 }
+end_problems=0
+end_check() {
+  if [ "$STOP_GATING" -eq 1 ]; then
+    fail "$*"
+  else
+    echo "NON-GATING: $*"
+  fi
+  end_problems=$((end_problems + 1))
+}
+
+# wait_for MARKER SECONDS: 0 once MARKER is in the test output, 1 on timeout or when the
+# test has finished without printing it.
+wait_for() {
+  local m=$1 t=$2 i
+  for i in $(seq 1 "$t"); do
+    if grep -q "$m" "$TESTOUT" 2>/dev/null; then return 0; fi
+    if grep -qE 'All tests passed|Some tests failed' "$TESTOUT" 2>/dev/null; then return 1; fi
+    sleep 1
+  done
+  return 1
+}
+
+# capture_state LABEL: what Android holds for the app right now. Sets S_SESSIONS (media
+# sessions of the app), S_ACTIVE (of those, active), S_PLAYING (in a playing state),
+# S_STATES, S_RECORDS (running playback services), S_CONN (bindings to them),
+# S_DESTROYS (onDestroy lines in logcat so far) and S_NOTIF (posted notifications).
+capture_state() {
+  local label=$1 f="$OUT/hook_state_$1"
+  adb_ shell dumpsys media_session > "$f.media_session.raw" 2>&1 || true
+  tr -d '\r' < "$f.media_session.raw" > "$f.media_session.txt"
+  awk -v pkg="package=$PKG" '
+    $0 ~ "^ *" pkg "$" { on = 1 }
+    on { print }
+    on && /queueTitle/ { on = 0; print "----" }
+  ' "$f.media_session.txt" > "$f.blocks.txt"
+  S_SESSIONS=$(grep -c '^----' "$f.blocks.txt")
+  S_ACTIVE=$(grep -c 'active=true' "$f.blocks.txt")
+  S_PLAYING=$(grep -cE 'state=PlaybackState \{state=(PLAYING\(3\)|3),' "$f.blocks.txt")
+  S_STATES=$(grep -oE 'state=PlaybackState \{state=[^,]*' "$f.blocks.txt" | sed 's/.*state=//' | tr '\n' ' ')
+  adb_ shell dumpsys activity services "$PKG" > "$f.services.raw" 2>&1 || true
+  tr -d '\r' < "$f.services.raw" > "$f.services.txt"
+  S_RECORDS=$(grep -c 'ServiceRecord{.*TvNinjaBackgroundService' "$f.services.txt")
+  S_CONN=$(grep -c 'ConnectionRecord{' "$f.services.txt")
+  adb_ logcat -d > "$f.logcat.raw" 2>&1 || true
+  S_DESTROYS=$(tr -d '\r' < "$f.logcat.raw" | grep -c 'TvNinjaService: onDestroy called')
+  adb_ shell dumpsys notification --noredact > "$f.notification.raw" 2>&1 || true
+  S_NOTIF=$(tr -d '\r' < "$f.notification.raw" | grep -cE "NotificationRecord.*pkg=$PKG")
+  rm -f "$f.media_session.raw" "$f.services.raw" "$f.logcat.raw" "$f.notification.raw"
+  STATE_LOG="${STATE_LOG}- $label: sessions=$S_SESSIONS active=$S_ACTIVE playing=$S_PLAYING states=[${S_STATES% }] playback services=$S_RECORDS bindings=$S_CONN onDestroy lines=$S_DESTROYS notifications=$S_NOTIF"$'\n'
+}
+STATE_LOG=""
 
 echo "hook: waiting up to ${WAIT_FOR_MARKER}s for $MARKER in $TESTOUT"
 seen=0
@@ -198,6 +257,46 @@ else
 fi
 adb_ shell cmd statusbar collapse > /dev/null 2>&1 || true
 
+# ---- Session end (gated by STOP_GATING) ----------------------------------------------
+# Stop 1: from the shade tap when it worked, else the test stops itself after its hold.
+if wait_for E2E_STOPPED_1 90; then
+  sleep 4
+  capture_state "after stop 1"
+  [ "$S_ACTIVE" -eq 0 ] || end_check "after stop 1: $S_ACTIVE media session(s) of $PKG still active (states: $S_STATES)"
+  [ "$S_PLAYING" -eq 0 ] || end_check "after stop 1: a media session of $PKG is still playing"
+  [ "$S_RECORDS" -eq 0 ] || end_check "after stop 1: the playback service is still running ($S_RECORDS record(s), $S_CONN binding(s))"
+  [ "$S_DESTROYS" -ge 1 ] || end_check "after stop 1: the service never logged onDestroy"
+  [ "$S_NOTIF" -eq 0 ] || end_check "after stop 1: the playback notification is still posted"
+else
+  end_check "the test never reached E2E_STOPPED_1, so the state after stop 1 was not checked"
+fi
+
+# Start again: exactly one session, no leftover binding.
+if wait_for E2E_CYCLE_PLAYING 90; then
+  sleep 3
+  capture_state "second start"
+  [ "$S_SESSIONS" -eq 1 ] || end_check "second start: $S_SESSIONS media sessions of $PKG (want exactly 1)"
+  [ "$S_PLAYING" -eq 1 ] || end_check "second start: the session is not playing (states: $S_STATES)"
+  [ "$S_RECORDS" -eq 1 ] || end_check "second start: $S_RECORDS playback services (want 1)"
+  [ "$S_CONN" -eq 0 ] || end_check "second start: $S_CONN binding(s) to the playback service (want none)"
+  [ "$S_NOTIF" -ge 1 ] || end_check "second start: no playback notification posted"
+else
+  end_check "the test never reached E2E_CYCLE_PLAYING, so the second start was not checked"
+fi
+
+# Stop 2, from the test.
+if wait_for E2E_STOPPED_2 90; then
+  sleep 4
+  capture_state "after stop 2"
+  [ "$S_ACTIVE" -eq 0 ] || end_check "after stop 2: $S_ACTIVE media session(s) of $PKG still active (states: $S_STATES)"
+  [ "$S_PLAYING" -eq 0 ] || end_check "after stop 2: a media session of $PKG is still playing"
+  [ "$S_RECORDS" -eq 0 ] || end_check "after stop 2: the playback service is still running ($S_RECORDS record(s), $S_CONN binding(s))"
+  [ "$S_DESTROYS" -ge 2 ] || end_check "after stop 2: onDestroy logged $S_DESTROYS time(s), want 2"
+  [ "$S_NOTIF" -eq 0 ] || end_check "after stop 2: the playback notification is still posted"
+else
+  end_check "the test never reached E2E_STOPPED_2, so the state after stop 2 was not checked"
+fi
+
 # ---- summary_extra.md ----------------------------------------------------------------
 {
   echo "### Sound mode hook"
@@ -214,6 +313,14 @@ adb_ shell cmd statusbar collapse > /dev/null 2>&1 || true
   echo "#### Stop pressed in the shade (non-gating)"
   echo
   printf '%s' "$tap_log"
+  echo
+  if [ "$STOP_GATING" -eq 1 ]; then mode=gating; else mode=non-gating; fi
+  echo "#### Session end ($mode): $end_problems problem(s)"
+  echo
+  echo "Taken while the app process is alive. sessions = media sessions of the app in dumpsys media_session; bindings = ConnectionRecords on its service in dumpsys activity services."
+  echo '```'
+  printf '%s' "$STATE_LOG"
+  echo '```'
   echo
   echo "SystemUI lines about this app or media controls:"
   echo '```'
@@ -241,7 +348,7 @@ adb_ shell cmd statusbar collapse > /dev/null 2>&1 || true
     echo '```'
   fi
   echo
-  echo "Full dumps: e2e-out/hook_dumpsys_audio.txt, hook_audio_flinger.txt, hook_media_session.txt, hook_notification.txt, hook_shade_*.xml"
+  echo "Full dumps: e2e-out/hook_dumpsys_audio.txt, hook_audio_flinger.txt, hook_media_session.txt, hook_notification.txt, hook_shade_*.xml, hook_state_*"
 } >> "$EXTRA"
 
 echo "hook: done, gating failures=$failures"
