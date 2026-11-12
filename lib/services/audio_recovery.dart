@@ -57,7 +57,10 @@ class PlaybackProgressMonitor {
   }
 
   void positionChanged(Duration position) {
-    final moved = position != _lastPosition;
+    // Zero is what mpv reports the instant a stream is (re)opened, before any
+    // audio has played; real progress reads a few hundred ms or more. Counting
+    // it would announce a recovery that has not happened.
+    final moved = position != _lastPosition && position != Duration.zero;
     _lastPosition = position;
     _evaluate(moved: moved);
   }
@@ -123,6 +126,7 @@ class AudioRecovery {
   AudioRecovery({
     required this.reopen,
     required this.onGiveUp,
+    this.canRecover,
     this.onStalled,
     this.onRecovered,
     this.attemptTimeout = const Duration(seconds: 15),
@@ -155,6 +159,10 @@ class AudioRecovery {
 
   /// Called once, after the fifth attempt in a row failed.
   final VoidCallback onGiveUp;
+
+  /// Asked before a stall starts a recovery; `false` (no session wanted any
+  /// more, already given up) leaves the stall alone. Defaults to always.
+  final bool Function()? canRecover;
 
   /// Called when a stall starts a recovery the stream error path did not.
   final VoidCallback? onStalled;
@@ -261,6 +269,7 @@ class AudioRecovery {
 
   void _watchdogStalled() {
     if (_chainActive) return;
+    if (canRecover != null && !canRecover!()) return;
     onStalled?.call();
     schedule();
   }

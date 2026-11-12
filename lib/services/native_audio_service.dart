@@ -67,6 +67,18 @@ class NativeAudioService {
   /// null URL there leaked the foreground service and its notification.
   static bool _gaveUp = false;
 
+  /// True from the moment [play] adopts a URL until [play] fails, [stop] or
+  /// [dispose] runs. A [play] that returned `false` has told its caller there
+  /// is no audio session (the page falls back to video), yet [_currentUrl]
+  /// stays set and the mpv player may still be alive and later report an error;
+  /// without this flag that error would probe and reconnect, starting audio
+  /// over the video.
+  static bool _sessionWanted = false;
+
+  /// Whether a failure or stall of the current stream may start reconnecting.
+  static bool get _mayReconnect =>
+      _sessionWanted && !_gaveUp && _currentUrl != null;
+
   /// Reconnect chain (2/4/8/16/30 s, five tries), stall detection and the
   /// decision that a reconnect worked, shared with the video player's pieces.
   /// A static is fine: the service is a process-wide singleton.
@@ -75,6 +87,7 @@ class NativeAudioService {
     onGiveUp: () =>
         // Same wording the video path uses when its reconnects give up.
         _surfaceError('Stream lost — connection timed out'),
+    canRecover: () => _mayReconnect,
     onStalled: () {
       debugPrint('[Audio] Stalled: position stopped moving, reconnecting');
       _reflectDisconnected();
@@ -205,12 +218,14 @@ class NativeAudioService {
   static Future<void> _handleStreamError(String url) async {
     // Already reported: a further error event from the same failed stream must
     // not start reconnecting again.
-    if (_gaveUp) return;
+    if (!_mayReconnect) return;
     final requestId = _playRequestId;
     final probe = await StreamDiagnostics.probe(url, null);
     // Superseded while probing: a zap or a stop. This result describes a
     // stream nobody is waiting on any more.
-    if (requestId != _playRequestId || url != _currentUrl || _gaveUp) return;
+    if (requestId != _playRequestId || url != _currentUrl || !_mayReconnect) {
+      return;
+    }
 
     if (StreamDiagnostics.isPermanent(probe)) {
       _surfaceError(StreamDiagnostics.userMessage(probe)!);
@@ -251,7 +266,7 @@ class NativeAudioService {
   /// when the foreground service is up.
   static Future<void> _reopenCurrentUrl() async {
     final url = _currentUrl;
-    if (url == null || _gaveUp) return;
+    if (url == null || !_mayReconnect) return;
     final requestId = _playRequestId;
     debugPrint('[Audio] Reconnect attempt ${_recovery.attempt}');
     try {
@@ -271,7 +286,9 @@ class NativeAudioService {
         });
         // A zap or a stop during the call above: this attempt is for a stream
         // nobody is waiting on any more.
-        if (requestId != _playRequestId || url != _currentUrl || _gaveUp) {
+        if (requestId != _playRequestId ||
+            url != _currentUrl ||
+            !_mayReconnect) {
           return;
         }
       }
@@ -346,6 +363,7 @@ class NativeAudioService {
       await checkCancelled();
 
       _currentUrl = url;
+      _sessionWanted = true;
       _recovery.reset();
 
       // Reuse or replace the current player.
@@ -372,6 +390,10 @@ class NativeAudioService {
         await oldPlayer.dispose();
         await checkCancelled();
       }
+
+      // The new player's listeners are attached: nothing the old player sent
+      // while it was being replaced may count towards this stream.
+      _recovery.reset();
 
       // Set state to buffering before opening
       _currentState = _currentState.copyWith(
@@ -417,14 +439,25 @@ class NativeAudioService {
       return false;
     } on PlatformException catch (e) {
       debugPrint('[Audio] PlatformException: ${e.message}');
-      // The caller is told this start failed: no reconnect chain may carry on.
-      _recovery.reset();
+      await _abandonFailedStart(requestId);
       return false;
     } catch (e) {
       debugPrint('[Audio] Error: $e');
-      _recovery.reset();
+      await _abandonFailedStart(requestId);
       return false;
     }
+  }
+
+  /// [play] is about to return `false`: the caller treats that as "no audio
+  /// session", so nothing may reconnect it later and its player must not keep
+  /// running. Ignored when a newer [play] has already taken over.
+  static Future<void> _abandonFailedStart(int requestId) async {
+    if (requestId != _playRequestId) return;
+    _sessionWanted = false;
+    _recovery.reset();
+    try {
+      await _audioPlayer.stop();
+    } catch (_) {}
   }
 
   static Future<bool> pause() async {
@@ -468,6 +501,7 @@ class NativeAudioService {
 
       _isBackgroundMode = false;
       _currentUrl = null;
+      _sessionWanted = false;
       _gaveUp = false;
       _recovery.reset();
       _playCanceller?.complete();
@@ -526,6 +560,7 @@ class NativeAudioService {
     _playerPositionSubscription = null;
     await _errorSubscription?.cancel();
     _errorSubscription = null;
+    _sessionWanted = false;
     _recovery.reset();
     _audioPlayer.dispose();
     _audioPlayer = Player();

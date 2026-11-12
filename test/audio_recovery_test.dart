@@ -9,6 +9,7 @@ class _Harness {
     recovery = AudioRecovery(
       reopen: _reopen,
       onGiveUp: () => giveUps.add(async.elapsed),
+      canRecover: () => canRecover,
       onStalled: () => stalls.add(async.elapsed),
       onRecovered: () => recoveries.add(async.elapsed),
       now: clock.now,
@@ -21,6 +22,9 @@ class _Harness {
   /// When true every reopen reports a failure at once, like mpv's
   /// "Failed to open" error arriving for each attempt.
   bool failAttempts;
+
+  /// What the service's "is an audio session still wanted" answers.
+  bool canRecover = true;
   final reopens = <Duration>[];
   final giveUps = <Duration>[];
   final stalls = <Duration>[];
@@ -136,6 +140,25 @@ void main() {
       });
     });
 
+    test('a reopen that reports position 0 is not a recovery', () {
+      fakeAsync((async) {
+        final h = _Harness(async);
+        // Stall path: mpv never stopped reporting playing / not buffering.
+        h.play(5);
+        h.elapse(24); // stalled, watchdog fires, chain scheduled
+        h.elapse(3);
+        expect(h.reopens.length, 1);
+        h.recovery.positionChanged(Duration.zero); // what open() reports
+        expect(h.recoveries, isEmpty);
+        expect(h.recovery.attempt, 1);
+        expect(h.recovery.isRecovering, isTrue);
+        // Audio really flowing does count.
+        h.recovery.positionChanged(const Duration(milliseconds: 250));
+        expect(h.recoveries.length, 1);
+        expect(h.recovery.attempt, 0);
+      });
+    });
+
     test('audio flowing ends the wait and the chain', () {
       fakeAsync((async) {
         final h = _Harness(async);
@@ -236,6 +259,18 @@ void main() {
       });
     });
 
+    test('a stall is left alone once the session is no longer wanted', () {
+      fakeAsync((async) {
+        final h = _Harness(async);
+        h.play(5);
+        h.canRecover = false;
+        h.elapse(120);
+        expect(h.stalls, isEmpty);
+        expect(h.reopens, isEmpty);
+        expect(h.recovery.isRecovering, isFalse);
+      });
+    });
+
     test('a stall does not start a second chain over a running one', () {
       fakeAsync((async) {
         final h = _Harness(async, failAttempts: true);
@@ -293,6 +328,23 @@ void main() {
         }
         expect(stalls, [true]);
         expect(progress, 1);
+      });
+    });
+
+    test('position zero is not movement', () {
+      fakeAsync((async) {
+        var progress = 0;
+        final m = PlaybackProgressMonitor(
+          onProgress: () => progress++,
+          onStallChanged: (_) {},
+        )
+          ..playingChanged(true)
+          ..bufferingChanged(false)
+          ..positionChanged(const Duration(seconds: 9))
+          ..positionChanged(Duration.zero);
+        expect(progress, 1, reason: 'only the 9 s event');
+        m.positionChanged(const Duration(milliseconds: 250));
+        expect(progress, 1, reason: 'still the same run of movement');
       });
     });
 
