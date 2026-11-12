@@ -102,6 +102,17 @@ class ReconnectController {
     schedule();
   }
 
+  /// Fires the next attempt now instead of after the backoff delay, then
+  /// carries on as usual (the chain continues from this attempt's outcome).
+  /// For a caller that knows the reason for waiting has just gone away: the
+  /// network came back. Counts as an attempt like any other, so call [reset]
+  /// first to give it a full budget.
+  void retryNow() {
+    _timer?.cancel();
+    _timer = null;
+    unawaited(_fire(_generation));
+  }
+
   /// Cancels any pending attempt and zeroes the attempt counter. Call this on
   /// success (first frame received after a reconnect) or on a fresh
   /// user-initiated action (e.g. a channel switch) so the next failure starts

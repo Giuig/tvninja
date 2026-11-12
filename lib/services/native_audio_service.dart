@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:tvninja/services/audio_recovery.dart';
 import 'package:tvninja/services/mpv_options.dart';
+import 'package:tvninja/services/network_reachability.dart';
 import 'package:tvninja/services/video/stream_diagnostics.dart';
 
 class _CancellationException implements Exception {}
@@ -93,6 +94,15 @@ class NativeAudioService {
       _reflectDisconnected();
     },
     onRecovered: () => debugPrint('[Audio] Playback recovered'),
+    // When the five attempts are spent, a stream whose host no longer resolves
+    // is an outage, not a dead stream: keep "Reconnecting" and poll every 30 s
+    // (for up to 30 min) instead of showing the error. See [hostResolves] for
+    // what the lookup does and does not prove.
+    isReachable: () => hostResolves(_currentUrl ?? ''),
+    onOffline: () =>
+        debugPrint('[Audio] Reconnects used up and no network, waiting'),
+    onNetworkBack: () =>
+        debugPrint('[Audio] Network is back, reconnecting now'),
   );
 
   static late Player _audioPlayer;
