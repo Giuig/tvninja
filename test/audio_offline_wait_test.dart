@@ -337,6 +337,10 @@ void main() {
         r.drop();
         r.elapse(45);
         r.startFlowing();
+        // Movement with no attempt running counts once it is sustained (a
+        // single position event proves nothing), here after 3 s.
+        expect(r.recoveries, isEmpty);
+        r.elapse(3);
         expect(r.recoveries.length, 1);
         expect(r.recovery.isWaitingForNetwork, isFalse);
         expect(r.recovery.isRecovering, isFalse);

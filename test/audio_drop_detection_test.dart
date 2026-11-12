@@ -237,12 +237,22 @@ void main() {
         r.schedule();
         expect(r.epoch, e0);
 
+        // Movement while a reconnect is pending is not progress (a stray
+        // position event after an error), so it leaves the epoch alone.
         rig.hadPlayed();
+        expect(r.epoch, e0);
+
+        // A stop or a new play clears the chain; then audio flowing on a
+        // fresh stream is progress.
+        r.reset();
         final e1 = r.epoch;
         expect(e1, isNot(e0));
+        rig.hadPlayed();
+        final e2 = r.epoch;
+        expect(e2, isNot(e1));
 
         r.reset();
-        expect(r.epoch, isNot(e1));
+        expect(r.epoch, isNot(e2));
       });
     });
   });

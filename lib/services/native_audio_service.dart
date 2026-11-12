@@ -94,6 +94,9 @@ class NativeAudioService {
       _reflectDisconnected();
     },
     onRecovered: () => debugPrint('[Audio] Playback recovered'),
+    onEarlyProgress: () => debugPrint(
+        '[Audio] Position moved while a reconnect is pending: not a recovery '
+        'until it is sustained'),
     // When the five attempts are spent, a stream whose host no longer resolves
     // is an outage, not a dead stream: keep "Reconnecting" and poll every 30 s
     // (for up to 30 min) instead of showing the error. Only for a stream that
@@ -109,6 +112,10 @@ class NativeAudioService {
     onNetworkBack: () =>
         debugPrint('[Audio] Network is back, reconnecting now'),
   );
+
+  /// Whether the current stream had a duration while it played; see
+  /// [StreamLengthEvidence]. Reset on every open.
+  static final StreamLengthEvidence _lengthEvidence = StreamLengthEvidence();
 
   static late Player _audioPlayer;
 
@@ -181,33 +188,17 @@ class NativeAudioService {
       }
     });
 
-    // The player this listener belongs to: [_audioPlayer] is swapped by
-    // [play], and the duration to judge is the one of the stream that ended.
+    // The player these listeners belong to: [_audioPlayer] is swapped by
+    // [play], and what to judge is the stream of the player that reported it.
     final player = _audioPlayer;
     _playerCompletedSubscription = player.stream.completed.listen((completed) {
-      if (!completed) return;
-      switch (streamEndAction(
-        duration: player.state.duration,
-        mayReconnect: _mayReconnect,
-      )) {
-        case StreamEndAction.replay:
-          player.play();
-        case StreamEndAction.reconnect:
-          // A live stream that ends is a drop. Do not call play(): on a
-          // completed player it seeks to 0, which a live stream refuses, and
-          // that refusal is an error event nobody should depend on.
-          debugPrint('[Audio] Live stream ended, reconnecting');
-          _reflectDisconnected();
-          // A reconnect attempt that reopened and ended at once has failed.
-          _recovery.attemptFailed();
-          _recovery.schedule();
-        case StreamEndAction.ignore:
-          break;
-      }
+      if (completed) unawaited(_handleCompleted(player));
     });
 
-    _playerPositionSubscription =
-        _audioPlayer.stream.position.listen(_recovery.positionChanged);
+    _playerPositionSubscription = player.stream.position.listen((position) {
+      _lengthEvidence.positionSeen(position, player.state.duration);
+      _recovery.positionChanged(position);
+    });
 
     _errorSubscription = _audioPlayer.stream.error.listen((error) {
       debugPrint('[Audio] Stream error: $error');
@@ -218,6 +209,72 @@ class NativeAudioService {
       final url = _currentUrl;
       if (url != null) unawaited(_handleStreamError(url));
     });
+  }
+
+  /// mpv reports the end of the current media. A live stream that ends is a
+  /// dropped connection; a file that ends is played again.
+  ///
+  /// "Live" is not read from the duration at this moment: a device run showed
+  /// mpv had already filled in a non-zero duration when `completed` fired for
+  /// an HLS channel and an Icecast station, which sent them down the replay
+  /// road (a refused seek, an error, a chain started by accident). See
+  /// [isLiveStream] for the evidence used instead. The values are logged so a
+  /// device run shows what each signal said.
+  static Future<void> _handleCompleted(Player player) async {
+    final requestId = _playRequestId;
+    final epoch = _recovery.epoch;
+    final duration = player.state.duration;
+    final position = player.state.position;
+    final playedWithoutDuration = _lengthEvidence.playedWithoutDuration;
+    final seekable = await _readSeekable(player);
+    // Superseded while asking mpv: a zap, a stop, a swapped player, or audio
+    // flowing again. This end belongs to a stream nobody is waiting on.
+    if (!identical(player, _audioPlayer) ||
+        requestId != _playRequestId ||
+        epoch != _recovery.epoch) {
+      return;
+    }
+    final action = streamEndAction(
+      duration: duration,
+      seekable: seekable,
+      playedWithoutDuration: playedWithoutDuration,
+      mayReconnect: _mayReconnect,
+    );
+    debugPrint('[Audio] Stream ended: duration=$duration position=$position '
+        'seekable=$seekable playedWithoutDuration=$playedWithoutDuration '
+        '-> ${action.name}');
+    switch (action) {
+      case StreamEndAction.replay:
+        unawaited(player.play());
+      case StreamEndAction.reconnect:
+        // Do not call play(): on a completed player it seeks to 0, which a
+        // live stream refuses, and that refusal is an error event nobody
+        // should depend on.
+        _reflectDisconnected();
+        // A reconnect attempt that reopened and ended at once has failed.
+        _recovery.attemptFailed();
+        _recovery.schedule();
+      case StreamEndAction.ignore:
+        break;
+    }
+  }
+
+  /// mpv's `seekable` property of the media that just ended: `false` when the
+  /// demuxer refuses seeks (what a live stream does), `null` when it cannot be
+  /// read.
+  static Future<bool?> _readSeekable(Player player) async {
+    try {
+      final native = player.platform as dynamic;
+      final String value = await (native.getProperty('seekable') as Future)
+          .timeout(const Duration(milliseconds: 500));
+      return switch (value) {
+        'yes' => true,
+        'no' => false,
+        _ => null,
+      };
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Immediately reflects a lost stream so the UI stops showing "playing".
@@ -333,6 +390,7 @@ class NativeAudioService {
     if (url == null || !_mayReconnect) return;
     final requestId = _playRequestId;
     debugPrint('[Audio] Reconnect attempt ${_recovery.attempt}');
+    _lengthEvidence.reset();
     try {
       // Emit buffering state so the UI reflects the reconnect attempt
       _isBuffering = true;
@@ -428,6 +486,7 @@ class NativeAudioService {
 
       _currentUrl = url;
       _sessionWanted = true;
+      _lengthEvidence.reset();
       _recovery.reset();
 
       // Reuse or replace the current player.

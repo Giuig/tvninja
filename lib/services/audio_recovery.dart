@@ -20,28 +20,80 @@ enum StreamEndAction {
 
 /// Whether a media with this [duration] is a live stream.
 ///
-/// mpv publishes a `duration` only when the demuxer knows one. A live HLS
-/// playlist (no end marker) and a progressive radio stream have none, so
-/// media_kit leaves `state.duration` at zero, while a file or a finished
-/// playlist reports its length. media_kit exposes no `seekable` flag, but the
-/// same streams answer a seek with "Cannot seek in this stream" (measured on
-/// both an HLS channel and an Icecast station), which is the other face of the
-/// same fact. A duration that is wrongly non-zero for a live stream only
-/// sends it down the replay road, which is how every stream ended before this
-/// check existed.
+/// mpv publishes a `duration` only when the demuxer knows one, so a live HLS
+/// playlist (no end marker) or a progressive radio stream has none while it
+/// plays. **Not enough on its own at the end of the stream**: with
+/// `keep-open=yes` mpv reports the length it played once the stream has ended,
+/// and a device run showed `state.duration` already non-zero when `completed`
+/// fired for both an HLS channel and an Icecast station. [isLiveStream] is the
+/// check to use at that moment.
 bool isLiveDuration(Duration duration) => duration <= Duration.zero;
+
+/// Remembers, per loaded stream, whether it had a duration while it was
+/// playing.
+///
+/// Sampled at the first position event that is not zero: by then a file or a
+/// finished playlist has long published its length, and a live stream still has
+/// none. Later changes (the length mpv fills in when the stream ends) are
+/// deliberately not looked at. [reset] on every open.
+class StreamLengthEvidence {
+  bool? _playedWithoutDuration;
+
+  /// `true`: the stream played with no duration (live). `false`: it had one
+  /// (a file). `null`: it has not played since the last [reset].
+  bool? get playedWithoutDuration => _playedWithoutDuration;
+
+  void positionSeen(Duration position, Duration duration) {
+    if (_playedWithoutDuration != null || position <= Duration.zero) return;
+    _playedWithoutDuration = isLiveDuration(duration);
+  }
+
+  void reset() => _playedWithoutDuration = null;
+}
+
+/// Whether the media that has just ended was a live stream, from everything
+/// the service can learn about it. In order:
+///
+/// 1. [seekable] `false` (mpv's `seekable` property at the end): the demuxer
+///    refuses seeks, which is exactly the condition that made
+///    `Player.play()`'s seek-to-0 fail with "Cannot seek in this stream".
+/// 2. [playedWithoutDuration] (see [StreamLengthEvidence]), when the stream
+///    played: what it looked like before the end rewrote the duration.
+/// 3. [duration] at the end, for a stream that never played.
+///
+/// A wrong guess in either direction is survivable: a live stream taken for a
+/// file is replayed, the replay is refused and the resulting error starts the
+/// reconnect chain; a file taken for a live stream is simply reopened.
+bool isLiveStream({
+  required Duration duration,
+  bool? seekable,
+  bool? playedWithoutDuration,
+}) {
+  if (seekable == false) return true;
+  if (playedWithoutDuration != null) return playedWithoutDuration;
+  return isLiveDuration(duration);
+}
 
 /// Decides what a `completed` event means.
 ///
 /// Replaying a live stream is the wrong answer: `Player.play()` on a completed
 /// player seeks to the start first, a live stream refuses that seek, and the
 /// refusal (two error events with mpv's own wording) was what used to start the
-/// reconnect by accident.
+/// reconnect by accident. [duration], [seekable] and [playedWithoutDuration]
+/// are as in [isLiveStream].
 StreamEndAction streamEndAction({
   required Duration duration,
   required bool mayReconnect,
+  bool? seekable,
+  bool? playedWithoutDuration,
 }) {
-  if (!isLiveDuration(duration)) return StreamEndAction.replay;
+  if (!isLiveStream(
+    duration: duration,
+    seekable: seekable,
+    playedWithoutDuration: playedWithoutDuration,
+  )) {
+    return StreamEndAction.replay;
+  }
   return mayReconnect ? StreamEndAction.reconnect : StreamEndAction.ignore;
 }
 
@@ -176,6 +228,17 @@ class PlaybackProgressMonitor {
 
   bool get isStalled => _stalled;
 
+  /// Inside a run of movement that [onProgress] already announced.
+  bool get isProgressing => _progressing;
+
+  /// Makes the next position change announce progress again, as if the stream
+  /// had just been opened. For a caller that has replaced the stream and wants
+  /// to hear about the new one, whatever the old one was doing.
+  void rearm() {
+    _progressing = false;
+    _lastPosition = null;
+  }
+
   void playingChanged(bool playing) {
     _playing = playing;
     _evaluate(moved: false);
@@ -262,7 +325,10 @@ class AudioRecovery {
     this.isReachable,
     this.onOffline,
     this.onNetworkBack,
+    this.onEarlyProgress,
     this.attemptTimeout = const Duration(seconds: 15),
+    this.selfRecoveryAfter = const Duration(seconds: 3),
+    this.selfRecoveryAdvance = const Duration(seconds: 2),
     this.reachabilityTimeout = const Duration(seconds: 4),
     this.offlinePollInterval = defaultOfflinePollInterval,
     this.offlineBudget = defaultOfflineBudget,
@@ -325,6 +391,18 @@ class AudioRecovery {
   /// immediate reconnect).
   final VoidCallback? onNetworkBack;
 
+  /// Called when the position moves while a reconnect is pending but no attempt
+  /// of ours is running. Not counted as recovery (see [_progress]); here so the
+  /// service can log it.
+  final VoidCallback? onEarlyProgress;
+
+  /// Movement seen while no attempt is running only counts as the stream having
+  /// come back by itself once it has lasted this long (wall time)...
+  final Duration selfRecoveryAfter;
+
+  /// ...and the position has advanced by at least this much over it.
+  final Duration selfRecoveryAdvance;
+
   /// How long one reachability check may take.
   final Duration reachabilityTimeout;
 
@@ -352,6 +430,13 @@ class AudioRecovery {
   bool _stalled = false;
   bool _fedBuffering = false;
   Completer<void>? _outcome;
+
+  /// Latest position reported, for [_candidate].
+  Duration _latestPosition = Duration.zero;
+
+  /// Movement noticed while a chain was pending and no attempt was running:
+  /// when it started and where. Becomes a recovery only if it is sustained.
+  ({DateTime at, Duration position})? _candidate;
 
   /// Pending poll of the offline wait.
   Timer? _offlineTimer;
@@ -387,7 +472,23 @@ class AudioRecovery {
     _feedWatchdog();
   }
 
-  void positionChanged(Duration position) => _monitor.positionChanged(position);
+  void positionChanged(Duration position) {
+    _latestPosition = position;
+    _monitor.positionChanged(position);
+    final candidate = _candidate;
+    if (candidate == null) return;
+    if (!_chainActive || !_monitor.isProgressing) {
+      // The movement stopped (a stall, a pause) or the chain is gone: it was
+      // not a stream playing.
+      _candidate = null;
+      return;
+    }
+    if (_now().difference(candidate.at) >= selfRecoveryAfter &&
+        position - candidate.position >= selfRecoveryAdvance) {
+      _candidate = null;
+      _recovered();
+    }
+  }
 
   /// The stream reported a failure. Ends the attempt in flight, if any, so
   /// the chain moves to its next backoff without waiting out
@@ -408,6 +509,7 @@ class AudioRecovery {
     _chainActive = false;
     _hasProgressed = false;
     _epoch++;
+    _candidate = null;
     _clearOffline();
     _controller.reset();
     _watchdog.reset();
@@ -420,6 +522,10 @@ class AudioRecovery {
 
   Future<void> _retry() async {
     final outcome = _outcome = Completer<void>();
+    // Whatever position events came before this attempt belong to the stream
+    // it replaces: only movement from now on can show that it worked.
+    _candidate = null;
+    _monitor.rearm();
     try {
       await reopen();
       if (!outcome.isCompleted) {
@@ -435,11 +541,35 @@ class AudioRecovery {
     if (outcome != null && !outcome.isCompleted) outcome.complete();
   }
 
+  /// An attempt of the chain is running: it has been started and has neither
+  /// failed, nor timed out, nor been replaced.
+  bool get _attemptInFlight => _outcome != null && !_outcome!.isCompleted;
+
+  /// The monitor saw the position start moving.
+  ///
+  /// With a chain pending and no attempt of ours running, that movement did
+  /// not come from a reconnect, and a single event proves little: after an
+  /// error mpv can still report one more position change although it is not
+  /// playing (measured: about 40 ms after the error, in every drop that ended
+  /// with a refused replay). Taking it for recovery cancelled the retry the
+  /// error had just armed and left the session on the spinner for good. So it
+  /// only becomes a candidate, and counts once the movement is sustained (the
+  /// stream healed on its own); an attempt that is running counts at once.
   void _progress() {
+    if (_chainActive && !_attemptInFlight) {
+      _candidate = (at: _now(), position: _latestPosition);
+      onEarlyProgress?.call();
+      return;
+    }
+    _recovered();
+  }
+
+  void _recovered() {
     final recovered = _chainActive;
     _chainActive = false;
     _hasProgressed = true;
     _epoch++;
+    _candidate = null;
     _clearOffline();
     // Bumps the controller's generation too, so an attempt still awaiting its
     // outcome does not schedule the next one.
