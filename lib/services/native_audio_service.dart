@@ -166,10 +166,28 @@ class NativeAudioService {
       }
     });
 
-    _playerCompletedSubscription =
-        _audioPlayer.stream.completed.listen((completed) {
-      if (completed) {
-        _audioPlayer.play();
+    // The player this listener belongs to: [_audioPlayer] is swapped by
+    // [play], and the duration to judge is the one of the stream that ended.
+    final player = _audioPlayer;
+    _playerCompletedSubscription = player.stream.completed.listen((completed) {
+      if (!completed) return;
+      switch (streamEndAction(
+        duration: player.state.duration,
+        mayReconnect: _mayReconnect,
+      )) {
+        case StreamEndAction.replay:
+          player.play();
+        case StreamEndAction.reconnect:
+          // A live stream that ends is a drop. Do not call play(): on a
+          // completed player it seeks to 0, which a live stream refuses, and
+          // that refusal is an error event nobody should depend on.
+          debugPrint('[Audio] Live stream ended, reconnecting');
+          _reflectDisconnected();
+          // A reconnect attempt that reopened and ended at once has failed.
+          _recovery.attemptFailed();
+          _recovery.schedule();
+        case StreamEndAction.ignore:
+          break;
       }
     });
 
@@ -201,29 +219,60 @@ class NativeAudioService {
     }
   }
 
-  /// Decides whether a failed stream is worth reconnecting to.
+  /// Which stream a probe is running for (its [_playRequestId]), or null.
+  /// mpv reports one failure as several error events; while a probe for the
+  /// current stream runs, the others have nothing to add.
+  static int? _probingRequestId;
+
+  /// Decides what a stream error means: a drop to reconnect from, or a dead
+  /// URL to report.
   ///
   /// mpv reports a dead URL and a dropped connection the same way ("Failed to
-  /// open ..."), so this used to treat every error as a drop: buffering, then
-  /// up to five reconnects over about a minute, then a silent stop. For a 404
-  /// that meant a minute of "Loading stream..." and no reason given — and when
-  /// the error arrived before background mode was on, no reconnect was
-  /// scheduled at all, so the spinner never stopped. Asking the server first
-  /// (same probe the video path uses) tells the two apart.
+  /// open ..."), and a dead URL used to loop through five reconnects and a
+  /// silent stop. Asking the server (the probe the video path uses) tells the
+  /// two apart, but it takes up to four seconds, so it no longer stands in
+  /// front of a drop's first retry: see [streamErrorAction]. A stream that
+  /// never produced audio is probed at once; one that did is probed only after
+  /// two failed reconnects in a row. Only a permanent answer (404/403/401)
+  /// ends the session; any other answer leaves the chain to carry on.
   ///
   /// An error that arrives before background mode is on (while [play] is still
   /// starting the foreground service) takes the same road: the first retry is
   /// at least two seconds away, by which time [play] has finished, and a [play]
   /// that fails outright cancels the chain itself.
   static Future<void> _handleStreamError(String url) async {
-    // Already reported: a further error event from the same failed stream must
-    // not start reconnecting again.
-    if (!_mayReconnect) return;
     final requestId = _playRequestId;
-    final probe = await StreamDiagnostics.probe(url, null);
-    // Superseded while probing: a zap or a stop. This result describes a
-    // stream nobody is waiting on any more.
-    if (requestId != _playRequestId || url != _currentUrl || !_mayReconnect) {
+    switch (streamErrorAction(
+      mayReconnect: _mayReconnect,
+      hasPlayed: _recovery.hasProgressed,
+      failedAttempts: _recovery.attempt,
+      probeInFlight: _probingRequestId == requestId,
+    )) {
+      case StreamErrorAction.ignore:
+        return;
+      case StreamErrorAction.reconnect:
+        // A no-op while a chain is already running (the usual case for the
+        // error of a reconnect attempt, and for a second line of one failure).
+        _recovery.schedule();
+        return;
+      case StreamErrorAction.probe:
+        break;
+    }
+
+    final epoch = _recovery.epoch;
+    _probingRequestId = requestId;
+    final StreamProbeResult probe;
+    try {
+      probe = await StreamDiagnostics.probe(url, null);
+    } finally {
+      if (_probingRequestId == requestId) _probingRequestId = null;
+    }
+    // Superseded while probing: a zap, a stop, or playback flowing again. This
+    // result describes a stream nobody is waiting on any more.
+    if (requestId != _playRequestId ||
+        url != _currentUrl ||
+        epoch != _recovery.epoch ||
+        !_mayReconnect) {
       return;
     }
 

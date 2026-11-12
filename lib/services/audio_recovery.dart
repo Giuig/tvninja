@@ -4,6 +4,91 @@ import 'package:flutter/foundation.dart';
 import 'package:tvninja/services/video/buffering_watchdog.dart';
 import 'package:tvninja/services/video/reconnect_controller.dart';
 
+/// What the service does when mpv reports that the current media has ended
+/// (`completed`).
+enum StreamEndAction {
+  /// A finished file: start it again, as it always did.
+  replay,
+
+  /// A live stream that ended is a dropped connection: reconnect directly.
+  reconnect,
+
+  /// A live stream ended while nobody wants it reconnected (stopped, given up,
+  /// a failed start): leave it alone.
+  ignore,
+}
+
+/// Whether a media with this [duration] is a live stream.
+///
+/// mpv publishes a `duration` only when the demuxer knows one. A live HLS
+/// playlist (no end marker) and a progressive radio stream have none, so
+/// media_kit leaves `state.duration` at zero, while a file or a finished
+/// playlist reports its length. media_kit exposes no `seekable` flag, but the
+/// same streams answer a seek with "Cannot seek in this stream" (measured on
+/// both an HLS channel and an Icecast station), which is the other face of the
+/// same fact. A duration that is wrongly non-zero for a live stream only
+/// sends it down the replay road, which is how every stream ended before this
+/// check existed.
+bool isLiveDuration(Duration duration) => duration <= Duration.zero;
+
+/// Decides what a `completed` event means.
+///
+/// Replaying a live stream is the wrong answer: `Player.play()` on a completed
+/// player seeks to the start first, a live stream refuses that seek, and the
+/// refusal (two error events with mpv's own wording) was what used to start the
+/// reconnect by accident.
+StreamEndAction streamEndAction({
+  required Duration duration,
+  required bool mayReconnect,
+}) {
+  if (!isLiveDuration(duration)) return StreamEndAction.replay;
+  return mayReconnect ? StreamEndAction.reconnect : StreamEndAction.ignore;
+}
+
+/// What the service does with a stream error event.
+enum StreamErrorAction {
+  /// Nothing: reconnecting is not wanted, or another event of the same
+  /// failure is already being looked into.
+  ignore,
+
+  /// Start the reconnect chain (a no-op while one is running).
+  reconnect,
+
+  /// Ask the server why first (`StreamDiagnostics.probe`); a permanent answer
+  /// ends the session with its message, anything else reconnects.
+  probe,
+}
+
+/// Failed reconnect attempts in a row after which a stream that used to play
+/// is probed for a permanent failure (404, 403, 401).
+const int probeAfterFailedAttempts = 2;
+
+/// Decides what to do with a stream error.
+///
+/// The probe used to sit in front of every first reconnect, so a plain drop
+/// waited up to four seconds before its two-second backoff even started. A
+/// drop is the likely case; a stream that has been removed is the rare one and
+/// shows itself by failing again. So:
+///
+/// * a stream that never produced audio since `NativeAudioService.play` (a dead
+///   URL at the first open) is probed at once, as before;
+/// * a stream that did play reconnects immediately and is probed only once
+///   [probeAfterFailedAttempts] attempts have failed in a row;
+/// * while a probe for this stream is running, further error events (mpv
+///   reports one failure as several lines) do nothing.
+StreamErrorAction streamErrorAction({
+  required bool mayReconnect,
+  required bool hasPlayed,
+  required int failedAttempts,
+  required bool probeInFlight,
+}) {
+  if (!mayReconnect || probeInFlight) return StreamErrorAction.ignore;
+  if (!hasPlayed || failedAttempts >= probeAfterFailedAttempts) {
+    return StreamErrorAction.probe;
+  }
+  return StreamErrorAction.reconnect;
+}
+
 /// Turns mpv's raw playing / buffering / position signals into two decisions:
 /// "the stream is making progress" and "the stream has stalled".
 ///
@@ -180,6 +265,8 @@ class AudioRecovery {
   late final PlaybackProgressMonitor _monitor;
 
   bool _chainActive = false;
+  bool _hasProgressed = false;
+  int _epoch = 0;
   bool _realBuffering = false;
   bool _stalled = false;
   bool _fedBuffering = false;
@@ -190,6 +277,15 @@ class AudioRecovery {
 
   /// A reconnect chain is pending or running.
   bool get isRecovering => _chainActive;
+
+  /// Audio has flowed since the last [reset]: the stream has worked at least
+  /// once, so a failure now is a drop and not a dead URL.
+  bool get hasProgressed => _hasProgressed;
+
+  /// Changes whenever playback is seen flowing and on every [reset]. A caller
+  /// that awaits something (a probe) captures it first and drops the result if
+  /// it changed: the stream it described has recovered or been replaced.
+  int get epoch => _epoch;
 
   void playingChanged(bool playing) => _monitor.playingChanged(playing);
 
@@ -218,6 +314,8 @@ class AudioRecovery {
   /// pending.
   void reset() {
     _chainActive = false;
+    _hasProgressed = false;
+    _epoch++;
     _controller.reset();
     _watchdog.reset();
     _monitor.reset();
@@ -247,6 +345,8 @@ class AudioRecovery {
   void _progress() {
     final recovered = _chainActive;
     _chainActive = false;
+    _hasProgressed = true;
+    _epoch++;
     // Bumps the controller's generation too, so an attempt still awaiting its
     // outcome does not schedule the next one.
     _controller.reset();
