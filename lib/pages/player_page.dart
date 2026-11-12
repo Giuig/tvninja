@@ -8,6 +8,8 @@ import 'package:tvninja/config/config.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:tvninja/l10n/app_localizations.dart';
 import 'package:tvninja/pages/player_mode.dart';
+import 'package:tvninja/pages/screen_wake_policy.dart';
+import 'package:tvninja/services/audio_output_service.dart';
 import 'package:tvninja/services/native_audio_service.dart';
 import 'package:tvninja/services/pip_service.dart';
 import 'package:tvninja/services/video/stream_kind.dart';
@@ -245,6 +247,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   StreamSubscription<PlaybackState>? _playbackStateSubscription;
   StreamSubscription<PlaybackControl>? _controlSubscription;
+  StreamSubscription<void>? _noisySubscription;
   StreamSubscription<bool>? _bufferingSubscription;
   StreamSubscription<String>? _audioErrorSubscription;
   StreamSubscription<bool>? _pipSubscription;
@@ -377,11 +380,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         setState(() {
           _isInPipMode = isInPip;
         });
-        // `_isInPipMode` is an input to the wakelock now, so entering or leaving
-        // PiP has to reconcile it like every other mutation does. Without this
-        // the flag would flip and the lock would keep whatever value it had —
-        // the exact drift the sync helpers exist to prevent.
-        _syncWakelock();
       }
     });
   }
@@ -445,21 +443,23 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// put the phone down. Neither does an error screen, which has nothing to
   /// watch.
   ///
-  /// **Nor does picture-in-picture.** A PiP window is something you glance at
-  /// beside another app, not something that should defeat the screen timeout —
-  /// and measured on 2026-09-17, it did: after leaving the app with video
-  /// playing, `dumpsys power` showed a SCREEN_BRIGHT_WAKE_LOCK still attributed
-  /// to this app's uid while only the PiP window was on screen. That was a
-  /// regression introduced when this helper replaced the old
-  /// fullscreen-only `WakelockPlus.enable()`, which never covered PiP because it
-  /// only ever ran on entering fullscreen. The partial wakelocks ExoPlayer and
-  /// the audio mixer hold are theirs and are correct — this is only about
-  /// keeping the display lit.
+  /// **Picture-in-picture keeps it while video plays** (owner decision
+  /// 2026-10-29). It used to drop the lock in PiP: measured on 2026-09-17, a
+  /// SCREEN_BRIGHT_WAKE_LOCK stayed attributed to this app while only the PiP
+  /// window was on screen, after the owner thought the app was closed. The
+  /// owner then asked for the screen to stay on in PiP, so the rule is now
+  /// "on while playing" everywhere; pausing still releases it. See
+  /// [shouldKeepScreenOn]. The partial wakelocks ExoPlayer and the audio mixer
+  /// hold are theirs and are correct; this is only about keeping the display
+  /// lit.
   ///
   /// Call it *after* the `setState` that changes any input — it reads them.
   void _syncWakelock() {
-    final watchable =
-        _isPlaying && !_audioOnlyMode && !_hasError && !_isInPipMode;
+    final watchable = shouldKeepScreenOn(
+      isPlaying: _isPlaying,
+      audioOnlyMode: _audioOnlyMode,
+      hasError: _hasError,
+    );
     if (watchable) {
       WakelockPlus.enable();
     } else {
@@ -541,6 +541,27 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         }
       }
     });
+
+    _noisySubscription =
+        AudioOutputService.becomingNoisy.listen((_) => _pauseForNoisyOutput());
+  }
+
+  /// Headphones are disconnecting, so output is about to fall back to the
+  /// speaker: pause whichever mode is active, the way Android expects media
+  /// apps to. Never resumed automatically when they reconnect; the user
+  /// presses play.
+  ///
+  /// Not gated on [_isPlaying]: a stream that is still buffering would
+  /// otherwise start on the speaker a moment later.
+  void _pauseForNoisyOutput() {
+    if (!mounted) return;
+    debugPrint(
+        '[PlayerPage] audio becoming noisy - pausing (audio mode: $_isAudioModeActive)');
+    if (_isAudioModeActive) {
+      NativeAudioService.pause();
+    } else {
+      _playerKey.currentState?.pause();
+    }
   }
 
   @override
@@ -548,6 +569,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _playbackStateSubscription?.cancel();
     _controlSubscription?.cancel();
+    _noisySubscription?.cancel();
     _bufferingSubscription?.cancel();
     _audioErrorSubscription?.cancel();
     _pipSubscription?.cancel();
