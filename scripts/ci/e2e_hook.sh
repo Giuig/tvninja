@@ -151,7 +151,7 @@ PY
 
 # What SystemUI itself knows about media, to explain a shade without a media control.
 adb_ shell dumpsys activity service com.android.systemui/.SystemUIService > "$OUT/hook_systemui.txt" 2>&1 || true
-systemui_media=$(tr -d '' < "$OUT/hook_systemui.txt" | grep -iE "$PKG|media.*(player|control|data)" | sed 's/^ *//' | cut -c1-200 | head -25)
+systemui_media=$(tr -d '\r' < "$OUT/hook_systemui.txt" | grep -iE "$PKG|media.*(player|control|data)" | sed 's/^ *//' | cut -c1-200 | head -25)
 
 stop_before=$(grep -c 'E2E_STOP_REQUESTED' "$TESTOUT")
 tapped=0
