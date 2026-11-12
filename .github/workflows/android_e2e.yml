@@ -11,11 +11,6 @@ name: Android E2E
 # `e2e` label, on release tags, and on the `trigger-build` dispatch that version-bump.yml
 # sends after it pushes a tag (a tag pushed with GITHUB_TOKEN starts no workflow by
 # itself). A run takes about 15 minutes.
-#
-# !!! BEFORE THIS BRANCH MERGES: change the `uses:` ref below from
-# !!!   @ci/shared-android-e2e   to   @main
-# !!! The shared workflow is still on a branch of ninja_material (a pull request there);
-# !!! once that is merged, the branch ref is gone or stale. Leaving it breaks the run.
 on:
   workflow_dispatch:
     inputs:
@@ -43,8 +38,7 @@ jobs:
   e2e:
     # A pull request runs only with the `e2e` label; every other trigger always runs.
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'e2e')
-    # TODO(before merge): @ci/shared-android-e2e -> @main (see the header).
-    uses: Giuig/ninja_material/.github/workflows/android-e2e.yml@ci/shared-android-e2e
+    uses: Giuig/ninja_material/.github/workflows/android-e2e.yml@main
     with:
       app-name: tvninja
       package: io.github.giuig.tvninja
