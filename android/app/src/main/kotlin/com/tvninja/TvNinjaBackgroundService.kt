@@ -1,5 +1,6 @@
 package io.github.giuig.tvninja
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -96,7 +97,15 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
                 val title = intent.getStringExtra(EXTRA_TITLE) ?: "TV Ninja"
                 val logo = intent.getStringExtra(EXTRA_LOGO)
                 Log.d(TAG, "ACTION_START: title=$title")
-                startBackground(title, logo)
+                val started = startBackground(title, logo)
+                // Report back whether or not startForeground worked: a stop that came
+                // in while this start was pending has been waiting for exactly this.
+                val stopRequested = TvNinjaPlugin.onForegroundStarted()
+                if (started && stopRequested) {
+                    Log.d(TAG, "A stop arrived while the start was pending, stopping now")
+                    stopBackground()
+                }
+                if (!started || stopRequested) return START_NOT_STICKY
             }
             ACTION_UPDATE_STATE -> {
                 val isPlaying = intent.getBooleanExtra("isPlaying", false)
@@ -262,15 +271,48 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
         notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
-    fun startBackground(title: String, logo: String?) {
-        Log.d(TAG, "startBackground called: title=$title")
-        sessionRunning = true
-        acquireWakeLock()
+    /**
+     * Brings the session up in the foreground. Returns false when the system
+     * refused the foreground start (API 31+), in which case the session has
+     * already been torn down and Dart has been told with a "foregroundRefused"
+     * event.
+     *
+     * Safe to call again while the session runs (the early start from the lock
+     * handover, then the start after the stream opened): the wake and wifi locks
+     * and the session are left alone, only the title, logo and notification are
+     * refreshed. Every start command still has to reach startForeground, so that
+     * call is repeated.
+     */
+    fun startBackground(title: String, logo: String?): Boolean {
+        Log.d(TAG, "startBackground called: title=$title running=$sessionRunning")
+        val alreadyRunning = sessionRunning
+        if (!alreadyRunning) {
+            sessionRunning = true
+            acquireWakeLock()
+        }
         currentTitle = title
         currentLogo = logo
         Log.d(TAG, "Calling startForeground...")
-        startForeground(NOTIFICATION_ID, createNotification(title, logo, false))
+        val notification = if (alreadyRunning) {
+            createNotification(title, logo, isPlaying, isBuffering)
+        } else {
+            createNotification(title, logo, false)
+        }
+        try {
+            startForeground(NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                e is ForegroundServiceStartNotAllowedException
+            ) {
+                Log.w(TAG, "startForeground refused: ${e.message}")
+                stopBackground()
+                TvNinjaPlugin.onPlaybackEvent(mapOf("event" to "foregroundRefused"))
+                return false
+            }
+            throw e
+        }
         Log.d(TAG, "startForeground called successfully")
+        return true
     }
 
     fun stopBackground() {

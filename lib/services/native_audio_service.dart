@@ -59,6 +59,28 @@ class NativeAudioService {
   static int _playRequestId = 0;
   static Completer<void>? _playCanceller;
 
+  /// True from the moment [startForegroundEarly] asks for the foreground
+  /// service until a [stop], a refusal or a failed [play] ends it. While it is
+  /// set, [play] does not start the service a second time after opening the
+  /// stream. Set before the native call returns, so a [stop] that arrives in
+  /// between still knows there is a service to stop.
+  static bool _foregroundStartedEarly = false;
+
+  /// Bumped by everything that ends or supersedes an early foreground start
+  /// ([stop], a refusal, a failed [play]), so a [startForegroundEarly] that was
+  /// awaiting the native side can tell its result is no longer wanted.
+  static int _foregroundEpoch = 0;
+
+  /// Debug builds only: delays the early foreground start (milliseconds), to
+  /// see how late it can be before the system objects.
+  static const int _debugForegroundDelayMs =
+      int.fromEnvironment('TVNINJA_DEBUG_LOCK_FGS_DELAY_MS');
+
+  /// Debug builds only: makes a [play] that follows an early foreground start
+  /// fail, to exercise the path that has to stop that service again.
+  static const bool _debugFailAudio =
+      bool.fromEnvironment('TVNINJA_DEBUG_LOCK_FAIL_AUDIO');
+
   /// Set by [_surfaceError], cleared by [play]: the current stream failed and
   /// the service stopped trying.
   ///
@@ -434,6 +456,82 @@ class NativeAudioService {
       case 'stopRequested':
         _controlController.add(PlaybackControl.stop);
         break;
+      case 'foregroundRefused':
+        // The system refused the foreground start and the service tore itself
+        // down: there is no service and no notification to update.
+        debugPrint('[Audio] The system refused the foreground service');
+        _foregroundStartedEarly = false;
+        _isBackgroundMode = false;
+        _foregroundEpoch++;
+        break;
+    }
+  }
+
+  /// Whether the screen is on and usable (Android's `PowerManager.isInteractive`).
+  /// False on a locked phone with the display off.
+  ///
+  /// `true` on the web, where there is no such thing, and `true` whenever the
+  /// answer is unavailable: the safe reading for a caller deciding whether to
+  /// act on a lock is "not locked".
+  static Future<bool> isScreenInteractive() async {
+    if (kIsWeb) return true;
+    try {
+      return await _channel.invokeMethod<bool>('isInteractive') ?? true;
+    } on PlatformException {
+      return true;
+    } on MissingPluginException {
+      return true;
+    }
+  }
+
+  /// Starts the foreground service and its notification now, before [play]
+  /// opens the stream, so the app is already allowed to keep playing when it
+  /// goes to the background. [play] then skips its own start after the stream
+  /// opened.
+  ///
+  /// Returns `true` once the system accepted the request, `false` when it was
+  /// refused (`FGS_NOT_ALLOWED`), failed, was superseded by a [stop] while it
+  /// ran, or on the web. After `false` there is nothing to stop. After `true`
+  /// the caller owns the service: it ends with [stop], or with a [play] that
+  /// fails.
+  static Future<bool> startForegroundEarly({
+    required String title,
+    String? logo,
+  }) async {
+    if (kIsWeb) return false;
+
+    final epoch = _foregroundEpoch;
+    _foregroundStartedEarly = true;
+    try {
+      if (kDebugMode && _debugForegroundDelayMs > 0) {
+        debugPrint('[Audio] Debug: delaying the early foreground start by '
+            '${_debugForegroundDelayMs}ms');
+        await Future<void>.delayed(
+            const Duration(milliseconds: _debugForegroundDelayMs));
+        if (epoch != _foregroundEpoch) return false;
+      }
+      await _channel.invokeMethod('startBackground', {
+        'title': title,
+        'logo': logo,
+      });
+      // A stop, a refusal or a failed play ended this start while the native
+      // side was answering: whoever did that already dealt with the service.
+      if (epoch != _foregroundEpoch) return false;
+      _isBackgroundMode = true;
+      return true;
+    } on PlatformException catch (e) {
+      debugPrint('[Audio] Early foreground start failed: ${e.code} ${e.message}');
+      if (epoch == _foregroundEpoch) {
+        _foregroundStartedEarly = false;
+        _foregroundEpoch++;
+      }
+      return false;
+    } on MissingPluginException {
+      if (epoch == _foregroundEpoch) {
+        _foregroundStartedEarly = false;
+        _foregroundEpoch++;
+      }
+      return false;
     }
   }
 
@@ -530,19 +628,29 @@ class NativeAudioService {
       );
       _playbackStateController.add(_currentState);
 
+      if (kDebugMode && _debugFailAudio && _foregroundStartedEarly) {
+        throw StateError('debug: audio start failure forced');
+      }
+
       await _audioPlayer
           .open(Media(url), play: true)
           .timeout(const Duration(seconds: 10));
       await checkCancelled();
       debugPrint('[Audio] Media opened successfully');
 
-      // Start background service immediately (shows notification)
-      debugPrint('[Audio] Calling startBackground service...');
-      await _channel.invokeMethod('startBackground', {
-        'title': title ?? 'TV Ninja',
-        'logo': logo,
-      });
-      await checkCancelled();
+      if (_foregroundStartedEarly) {
+        // The service was started before the stream opened, see
+        // [startForegroundEarly]; starting it again would only repeat its setup.
+        debugPrint('[Audio] Foreground service already started early');
+      } else {
+        // Start background service immediately (shows notification)
+        debugPrint('[Audio] Calling startBackground service...');
+        await _channel.invokeMethod('startBackground', {
+          'title': title ?? 'TV Ninja',
+          'logo': logo,
+        });
+        await checkCancelled();
+      }
       _isBackgroundMode = true;
       debugPrint('[Audio] startBackground called');
 
@@ -578,6 +686,19 @@ class NativeAudioService {
     if (requestId != _playRequestId) return;
     _sessionWanted = false;
     _recovery.reset();
+    if (_foregroundStartedEarly) {
+      // The service was started for this session and there will be no audio to
+      // keep it for: end it, so no empty notification and no wake lock is left.
+      // Cleared before the await, so a newer start sees a clean slate.
+      _foregroundStartedEarly = false;
+      _isBackgroundMode = false;
+      _foregroundEpoch++;
+      try {
+        await _channel.invokeMethod('stopBackground');
+      } catch (e) {
+        debugPrint('[Audio] Stopping the early foreground service failed: $e');
+      }
+    }
     try {
       await _audioPlayer.stop();
     } catch (_) {}
@@ -619,8 +740,22 @@ class NativeAudioService {
 
   static Future<bool> stop() async {
     try {
-      if (!_isInitialized) return true;
       if (kIsWeb) return true;
+
+      // An early foreground start ends here whatever else is going on, including
+      // when the player was never initialised (the early start comes before
+      // [initialize]). The native side holds the stop back if the service is
+      // still starting.
+      final earlyForeground = _foregroundStartedEarly;
+      _foregroundStartedEarly = false;
+      _foregroundEpoch++;
+      if (!_isInitialized) {
+        if (earlyForeground) {
+          _isBackgroundMode = false;
+          await _channel.invokeMethod('stopBackground');
+        }
+        return true;
+      }
 
       _isBackgroundMode = false;
       _currentUrl = null;
@@ -684,6 +819,8 @@ class NativeAudioService {
     await _errorSubscription?.cancel();
     _errorSubscription = null;
     _sessionWanted = false;
+    _foregroundStartedEarly = false;
+    _foregroundEpoch++;
     _recovery.reset();
     _audioPlayer.dispose();
     _audioPlayer = Player();
