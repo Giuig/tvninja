@@ -27,6 +27,10 @@
 #   - the audio facts that bear on system equalizers (dumpsys audio, dumpsys
 #     media.audio_flinger, effect-session broadcasts in logcat);
 #   - an attempt to press Stop in the notification shade the way a user would.
+#
+# The same hook also serves integration_test/foreground_start_stop_test.dart (picked by $1,
+# see foreground_start_stop_hook below): a start of the playback service followed at once
+# by a stop must not crash the app. Its summary is appended to the sound mode one.
 set -u
 
 OUT=${OUT:?OUT is required}
@@ -43,7 +47,8 @@ STOP_GATING=1
 adb_() { adb -s "$DEVICE" "$@"; }
 
 mkdir -p "$OUT"
-: > "$EXTRA"
+# The first file's hook starts the summary; the hooks of later files append to it.
+if [ "${1:-sound_mode_test.dart}" = "sound_mode_test.dart" ]; then : > "$EXTRA"; else touch "$EXTRA"; fi
 failures=0
 fail() {
   echo "GATING FAIL: $*"
@@ -101,6 +106,102 @@ capture_state() {
   STATE_LOG="${STATE_LOG}- $label: sessions=$S_SESSIONS active=$S_ACTIVE playing=$S_PLAYING states=[${S_STATES% }] playback services=$S_RECORDS bindings=$S_CONN onDestroy lines=$S_DESTROYS notifications=$S_NOTIF"$'\n'
 }
 STATE_LOG=""
+
+# ---- foreground_start_stop_test.dart: a service start followed at once by a stop ----------
+# The test queues startBackground and stopBackground back to back, three times. The system
+# kills an app whose startForegroundService call is not followed by startForeground in the
+# service, and a stop that arrives first tears the service down in that window. Gated:
+# the same app process before and after, no crash and no "did not then call
+# startForeground" in logcat, and nothing left running (no playback service, no session,
+# no notification) once the rounds are over.
+foreground_start_stop_hook() {
+  local begin=E2E_FGS_RACE_BEGIN done_marker=E2E_FGS_RACE_DONE
+  local pid_before pid_after offset crash_buffer fatal_lines destroys gone=0 i
+  local slice_file="$OUT/hook_fgs_race_logcat.txt"
+  echo "hook: waiting up to ${WAIT_FOR_MARKER}s for $begin in $TESTOUT"
+  if ! wait_for "$begin" "$WAIT_FOR_MARKER"; then
+    fail "marker $begin never appeared in $TESTOUT (the test never started)"
+    {
+      echo "### Service start followed at once by a stop"
+      echo
+      echo "- **FAIL**: the test never started, so nothing was checked"
+    } >> "$EXTRA"
+    return 1
+  fi
+  echo "hook: marker seen"
+
+  # What happens from here on is what this test is about: a crash buffer that is empty
+  # now, the logcat file's current length, and the process id to compare against.
+  adb_ logcat -b crash -c > /dev/null 2>&1 || true
+  offset=$(wc -l < "$LOGCAT" 2>/dev/null || echo 0)
+  pid_before=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
+
+  # Until the last round is done, the test has finished, or the app is gone for three
+  # checks in a row (a crash: nothing more will be printed).
+  for i in $(seq 1 150); do
+    if grep -q "$done_marker" "$TESTOUT" 2>/dev/null; then break; fi
+    if grep -qE 'All tests passed|Some tests failed' "$TESTOUT" 2>/dev/null; then break; fi
+    if [ -n "$pid_before" ] && [ -z "$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r')" ]; then
+      gone=$((gone + 1))
+      if [ "$gone" -ge 3 ]; then break; fi
+    else
+      gone=0
+    fi
+    sleep 1
+  done
+  sleep 3
+  pid_after=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
+
+  adb_ logcat -b crash -d 2>&1 | tr -d '\r' > "$OUT/hook_fgs_race_crash_buffer.txt" || true
+  crash_buffer=$(grep -c 'FATAL EXCEPTION' "$OUT/hook_fgs_race_crash_buffer.txt")
+  # The runner's logcat file, from where this test began (it streams continuously, so
+  # give it a moment to catch up first).
+  sleep 2
+  tail -n +"$((offset + 1))" "$LOGCAT" 2>/dev/null | tr -d '\r' > "$slice_file" || true
+  fatal_lines=$(grep -hE "FATAL EXCEPTION|ForegroundServiceDidNotStartInTimeException|did not then call Service.startForeground|Bringing down service while still waiting for start foreground" \
+    "$slice_file" "$OUT/hook_fgs_race_crash_buffer.txt" | sort -u | head -8)
+
+  if [ -z "$pid_before" ]; then
+    fail "the app process was not running when the rounds began, so nothing was checked"
+  elif [ "$pid_after" != "$pid_before" ]; then
+    fail "the app process changed or died during the start/stop rounds (pid ${pid_before} -> ${pid_after:-none})"
+  fi
+  [ "$crash_buffer" -eq 0 ] || fail "$crash_buffer crash(es) of the app in the crash buffer during the start/stop rounds"
+  [ -z "$fatal_lines" ] || fail "logcat holds crash or startForeground lines: $(printf '%s' "$fatal_lines" | head -3 | tr '\n' '|')"
+  grep -q "$done_marker" "$TESTOUT" 2>/dev/null || fail "the test never reached $done_marker"
+
+  # What Android still holds for the app, once the rounds are over.
+  capture_state "after the rounds"
+  [ "$S_RECORDS" -eq 0 ] || fail "after the rounds: the playback service is still running ($S_RECORDS record(s))"
+  [ "$S_ACTIVE" -eq 0 ] || fail "after the rounds: $S_ACTIVE media session(s) of $PKG still active (states: $S_STATES)"
+  [ "$S_NOTIF" -eq 0 ] || fail "after the rounds: the playback notification is still posted"
+  destroys=$(grep -c 'TvNinjaService: onDestroy called' "$slice_file")
+
+  {
+    echo "### Service start followed at once by a stop"
+    echo
+    if [ "$failures" -eq 0 ]; then echo "Gating: **pass**"; else echo "Gating: **FAIL** ($failures)"; fi
+    echo
+    echo '```'
+    echo "app pid before=${pid_before:-none} after=${pid_after:-none}"
+    echo "FATAL EXCEPTION lines in the crash buffer: $crash_buffer"
+    echo "service onDestroy lines since the first round: $destroys"
+    printf '%s' "$STATE_LOG"
+    if [ -n "$fatal_lines" ]; then echo "crash / startForeground lines:"; echo "$fatal_lines"; fi
+    echo '```'
+    echo
+    echo "Evidence: e2e-out/hook_fgs_race_logcat.txt, hook_fgs_race_crash_buffer.txt, hook_state_after the rounds.*"
+  } >> "$EXTRA"
+  echo "hook: done, gating failures=$failures"
+  [ "$failures" -eq 0 ]
+}
+
+case "${1:-sound_mode_test.dart}" in
+  foreground_start_stop_test.dart)
+    foreground_start_stop_hook
+    exit $?
+    ;;
+esac
 
 echo "hook: waiting up to ${WAIT_FOR_MARKER}s for $MARKER in $TESTOUT"
 seen=0
