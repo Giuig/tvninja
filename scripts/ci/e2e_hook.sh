@@ -19,6 +19,10 @@
 # binding to the service. A failed check fails the run while STOP_GATING=1 (with 0 it is
 # only recorded in the summary).
 #
+# MEDIA BUTTON, after the final stop: a play key and a headset-hook key sent while the app
+# process is alive must not crash it (same pid afterwards, no crash of the app in logcat).
+# Gated together with the session-end checks.
+#
 # NON-GATING, recorded in $OUT/summary_extra.md and the files next to it:
 #   - the audio facts that bear on system equalizers (dumpsys audio, dumpsys
 #     media.audio_flinger, effect-session broadcasts in logcat);
@@ -299,6 +303,39 @@ else
   end_check "the test never reached E2E_STOPPED_2, so the state after stop 2 was not checked"
 fi
 
+# ---- Media button after the final stop (gated by KEY_GATING) -------------------------------
+# A headset or Bluetooth Play press once the session is gone must not crash the app. The
+# system sends such a key to the receiver the last session registered; the androidx
+# MediaButtonReceiver threw IllegalStateException there because no service handles
+# MEDIA_BUTTON. The app has no such receiver any more, so the key goes nowhere. Sent while
+# the app process is still alive (the test keeps it up 25 s after the stop), with a plain
+# play and a headset hook a few seconds apart.
+KEY_LOG=""
+if grep -q 'E2E_STOPPED_2' "$TESTOUT" 2>/dev/null; then
+  pid_before=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
+  adb_ shell input keyevent KEYCODE_MEDIA_PLAY > /dev/null 2>&1 || true
+  sleep 3
+  adb_ shell input keyevent KEYCODE_HEADSETHOOK > /dev/null 2>&1 || true
+  sleep 3
+  pid_after=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
+  adb_ logcat -d 2>&1 | tr -d '\r' > "$OUT/hook_logcat_after_keys.txt" || true
+  # The runner's logcat file, and the device's own buffer, whichever has the crash.
+  crash_lines=$(cat "$OUT/hook_logcat_after_keys.txt" "$LOGCAT" 2>/dev/null \
+    | grep -E "Process: $PKG,|Could not find any Service that handles" | sort -u | head -6)
+  key_lines=$(grep -cE 'Sending KeyEvent .*(KEYCODE_MEDIA_PLAY|KEYCODE_HEADSETHOOK)' "$OUT/hook_logcat_after_keys.txt")
+  KEY_LOG="- pid before=${pid_before:-none} after=${pid_after:-none}; key events logged by the media session service=$key_lines; crash lines=$(printf '%s' "$crash_lines" | grep -c .)"$'\n'
+  if [ -z "$pid_before" ]; then
+    end_check "media button: the app process was already gone before the key was sent, so nothing was checked"
+  elif [ "$pid_after" != "$pid_before" ]; then
+    end_check "media button after the final stop: the app process changed or died (pid ${pid_before} -> ${pid_after:-none})"
+  fi
+  if [ -n "$crash_lines" ]; then
+    end_check "media button after the final stop: crash in logcat: $(printf '%s' "$crash_lines" | head -3 | tr '\n' '|')"
+  fi
+else
+  end_check "the test never reached E2E_STOPPED_2, so the media button was not tried"
+fi
+
 # ---- summary_extra.md ----------------------------------------------------------------
 {
   echo "### Sound mode hook"
@@ -322,6 +359,11 @@ fi
   echo "Taken while the app process is alive. sessions = media sessions of the app in dumpsys media_session; bindings = the service's 'All Connections' entries in dumpsys activity services."
   echo '```'
   printf '%s' "$STATE_LOG"
+  echo '```'
+  echo
+  echo "Media button after the final stop (play, then headset hook; $mode):"
+  echo '```'
+  printf '%s' "${KEY_LOG:-(not sent)}"
   echo '```'
   echo
   echo "SystemUI lines about this app or media controls:"
