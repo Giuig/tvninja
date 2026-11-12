@@ -50,6 +50,10 @@ class _Rig {
 
   bool canRecover = true;
 
+  /// The stream has played before it drops (the usual case). False models a
+  /// URL that never produced audio.
+  bool progressed = true;
+
   /// Audio is coming out: the position moves every second.
   bool flowing = false;
   final reopens = <Duration>[];
@@ -86,8 +90,14 @@ class _Rig {
 
   void elapse(int seconds) => async.elapse(Duration(seconds: seconds));
 
-  /// The five failing attempts: the budget is spent at 60 s.
+  /// The stream plays (when [progressed]) and then drops; the five failing
+  /// attempts spend the budget at 60 s.
   void drop() {
+    if (progressed) {
+      startFlowing();
+      flowing = false;
+      recovery.playingChanged(false);
+    }
     recovery.schedule();
     elapse(60);
   }
@@ -377,6 +387,21 @@ void main() {
         expect(r.offlineStarts, [_s(64)]);
         expect(r.giveUps, isEmpty);
         expect(r.recovery.isWaitingForNetwork, isTrue);
+      });
+    });
+
+    test('a stream that never played gives up as before, without a lookup',
+        () {
+      fakeAsync((async) {
+        // NXDOMAIN (a retired or mistyped host) fails the lookup exactly like
+        // a dead network; only a stream that has worked is worth waiting for.
+        final r = _Rig(async)..progressed = false;
+        r.drop();
+        expect(r.giveUps, [_s(60)]);
+        expect(r.lookups, isEmpty);
+        expect(r.offlineStarts, isEmpty);
+        expect(r.recovery.isWaitingForNetwork, isFalse);
+        expect(r.recovery.isRecovering, isFalse);
       });
     });
 

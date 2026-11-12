@@ -96,11 +96,16 @@ class NativeAudioService {
     onRecovered: () => debugPrint('[Audio] Playback recovered'),
     // When the five attempts are spent, a stream whose host no longer resolves
     // is an outage, not a dead stream: keep "Reconnecting" and poll every 30 s
-    // (for up to 30 min) instead of showing the error. See [hostResolves] for
-    // what the lookup does and does not prove.
+    // (for up to 30 min) instead of showing the error. Only for a stream that
+    // has played this session; one that never worked still ends in the error.
+    // See [hostResolves] for what the lookup does and does not prove.
     isReachable: () => hostResolves(_currentUrl ?? ''),
-    onOffline: () =>
-        debugPrint('[Audio] Reconnects used up and no network, waiting'),
+    onOffline: () {
+      debugPrint('[Audio] Reconnects used up and no network, waiting');
+      // Show "Reconnecting" for the wait: the last failed attempt may have left
+      // the UI on ready / not playing.
+      _reflectDisconnected();
+    },
     onNetworkBack: () =>
         debugPrint('[Audio] Network is back, reconnecting now'),
   );

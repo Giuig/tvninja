@@ -15,9 +15,12 @@ import 'package:flutter/foundation.dart';
 /// * a captive portal or a hijacking resolver answers every name;
 /// * it says nothing about the stream itself, only that DNS works.
 ///
-/// `false` is the strong answer: the lookup failed or timed out, so the
-/// device has no usable network (or no DNS), and retrying the stream cannot
-/// work yet.
+/// `false` means only "this host cannot be resolved right now": the lookup
+/// failed or timed out. That is what a dead network looks like, but also what
+/// a retired or mistyped domain (NXDOMAIN) looks like, since the lookup throws
+/// the same `SocketException` for both. So it is not proof that the network is
+/// down; a caller that wants to wait for the network should only do so for a
+/// stream that has already worked.
 ///
 /// Returns `true` ("can't tell, behave as before") on the web, for a URL with
 /// no host, for an IP-literal host (there is nothing to resolve, so the answer

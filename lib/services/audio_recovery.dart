@@ -308,8 +308,11 @@ class AudioRecovery {
 
   /// Whether the network is usable right now (a DNS lookup of the stream's
   /// host, see `hostResolves`). Asked when the reconnect budget runs out: if
-  /// it says no, the chain keeps waiting instead of giving up. `null` (the
-  /// default) means the session gives up as soon as the budget is spent. A
+  /// it says no, the chain keeps waiting instead of giving up, but only for a
+  /// stream that has played this session ([hasProgressed]): a host that never
+  /// resolved is as likely retired as offline, and waiting out a dead URL
+  /// would trade the error screen for half an hour of "Reconnecting". `null`
+  /// (the default) means the session gives up as soon as the budget is spent. A
   /// lookup that throws counts as "can't tell" (true); one that does not
   /// answer within [reachabilityTimeout] counts as "no".
   final Future<bool> Function()? isReachable;
@@ -452,16 +455,18 @@ class AudioRecovery {
   }
 
   /// The controller spent its five attempts. Before surfacing the error, ask
-  /// whether the network is even there: an outage longer than the ~2 minutes
-  /// the backoff covers is not the stream's fault, and giving up would leave
-  /// the user on an error screen for a stream that would work the moment the
-  /// connection returns. [_chainActive] stays true while waiting, so every
+  /// (for a stream that has played) whether the network is even there: an
+  /// outage longer than the ~2 minutes the backoff covers is not the stream's
+  /// fault, and giving up would leave the user on an error screen for a stream
+  /// that would work the moment the connection returns. [_chainActive] stays true while waiting, so every
   /// other trigger (stream errors, `completed`, the stall watchdog) stays a
   /// no-op, exactly as during a normal chain.
   void _giveUp() {
     _watchdog.cancel();
     _finishAttempt();
-    if (isReachable == null) {
+    // A stream that never played gives up as it always did: its failed lookup
+    // may be a host that does not exist, not a network that went away.
+    if (isReachable == null || !_hasProgressed) {
       _finalGiveUp();
       return;
     }
