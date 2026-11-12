@@ -28,8 +28,12 @@ void main() {
   debugPrint = debugPrintSynchronously;
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('sound mode plays, holds, and stops',
-      timeout: const Timeout(Duration(minutes: 3)), (tester) async {
+  // A plain test, not testWidgets: the hook may open the notification shade through
+  // uiautomator, which switches Android accessibility on, and the widget tester then fails
+  // any test that ends with a semantics handle it did not create. Nothing here needs a
+  // widget tree.
+  test('sound mode plays, holds, and stops',
+      timeout: const Timeout(Duration(minutes: 3)), () async {
     MediaKit.ensureInitialized();
     await NativeAudioService.initialize();
 

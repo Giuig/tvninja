@@ -64,7 +64,8 @@ for _ in $(seq 1 10); do
     on { print }
     on && /queueTitle/ { exit }
   ' "$OUT/hook_media_session.txt" | tr -d '\r' > "$OUT/hook_session_block.txt"
-  if grep -q 'state=PlaybackState {state=3,' "$OUT/hook_session_block.txt"; then
+  # Android 9 prints state=3, Android 14 prints state=PLAYING(3).
+  if grep -qE 'state=PlaybackState \{state=(PLAYING\()?3\)?,' "$OUT/hook_session_block.txt"; then
     session_ok=1
     break
   fi
@@ -148,11 +149,15 @@ print("NONE")
 PY
 }
 
+# What SystemUI itself knows about media, to explain a shade without a media control.
+adb_ shell dumpsys activity service com.android.systemui/.SystemUIService > "$OUT/hook_systemui.txt" 2>&1 || true
+systemui_media=$(tr -d '' < "$OUT/hook_systemui.txt" | grep -iE "$PKG|media.*(player|control|data)" | sed 's/^ *//' | cut -c1-200 | head -25)
+
 stop_before=$(grep -c 'E2E_STOP_REQUESTED' "$TESTOUT")
 tapped=0
 for mode in expand-notifications expand-settings; do
   adb_ shell cmd statusbar "$mode" > /dev/null 2>&1 || true
-  sleep 3
+  sleep 5
   adb_ shell uiautomator dump /sdcard/shade_$mode.xml > "$OUT/hook_uiautomator_$mode.txt" 2>&1 || true
   adb_ pull /sdcard/shade_$mode.xml "$OUT/hook_shade_$mode.xml" > /dev/null 2>&1 || true
   if [ ! -s "$OUT/hook_shade_$mode.xml" ]; then
@@ -209,6 +214,11 @@ adb_ shell cmd statusbar collapse > /dev/null 2>&1 || true
   echo "#### Stop pressed in the shade (non-gating)"
   echo
   printf '%s' "$tap_log"
+  echo
+  echo "SystemUI lines about this app or media controls:"
+  echo '```'
+  echo "${systemui_media:-(none)}"
+  echo '```'
   echo
   echo "#### Audio facts for the equalizer question (non-gating, uid=${uid:-?} pid=${pid:-?})"
   echo
