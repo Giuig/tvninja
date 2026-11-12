@@ -303,19 +303,31 @@ else
   end_check "the test never reached E2E_STOPPED_2, so the state after stop 2 was not checked"
 fi
 
-# ---- Media button after the final stop (gated by KEY_GATING) -------------------------------
+# ---- Media button after the final stop (gated with the session-end checks) -------------------
 # A headset or Bluetooth Play press once the session is gone must not crash the app. The
 # system sends such a key to the receiver the last session registered; the androidx
 # MediaButtonReceiver threw IllegalStateException there because no service handles
 # MEDIA_BUTTON. The app has no such receiver any more, so the key goes nowhere. Sent while
 # the app process is still alive (the test keeps it up 25 s after the stop), with a plain
 # play and a headset hook a few seconds apart.
+# The keys go through the media session service (`cmd media_session dispatch`), the path a
+# Bluetooth headset takes. `input keyevent` is only the fallback for an image without that
+# command: it injects through the window, and on the emulator the app window had no focus
+# after the shade, so the injected key waited 5 s and raised an ANR that has nothing to do
+# with the receiver.
+send_key() { # $1 = cmd media_session name, $2 = keycode for the fallback
+  local out
+  out=$(adb_ shell cmd media_session dispatch "$1" 2>&1 | tr -d '\r')
+  case "$out" in
+    *"No shell command"*|*"nknown command"*|*"rror"*) adb_ shell input keyevent "$2" > /dev/null 2>&1 || true ;;
+  esac
+}
 KEY_LOG=""
 if grep -q 'E2E_STOPPED_2' "$TESTOUT" 2>/dev/null; then
   pid_before=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
-  adb_ shell input keyevent KEYCODE_MEDIA_PLAY > /dev/null 2>&1 || true
+  send_key play KEYCODE_MEDIA_PLAY
   sleep 3
-  adb_ shell input keyevent KEYCODE_HEADSETHOOK > /dev/null 2>&1 || true
+  send_key headsethook KEYCODE_HEADSETHOOK
   sleep 3
   pid_after=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
   adb_ logcat -d 2>&1 | tr -d '\r' > "$OUT/hook_logcat_after_keys.txt" || true
