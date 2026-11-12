@@ -68,6 +68,14 @@ class NativeAudioService {
   /// null URL there leaked the foreground service and its notification.
   static bool _gaveUp = false;
 
+  /// Builds the mpv [Player] behind the background audio.
+  ///
+  /// A field only so a widget test can run the real `PlayerPage` in sound
+  /// mode on a host without libmpv (a real [Player] cannot be constructed
+  /// there); the app always uses the default.
+  @visibleForTesting
+  static Player Function() playerFactory = Player.new;
+
   static late Player _audioPlayer;
 
   static PlaybackState get currentState => _currentState;
@@ -78,7 +86,7 @@ class NativeAudioService {
     if (_isInitialized) return;
     _isInitialized = true;
 
-    _audioPlayer = Player();
+    _audioPlayer = playerFactory();
     await applyLiveStreamMpvOptions(_audioPlayer);
 
     _eventSubscription = _eventChannel.receiveBroadcastStream().listen(
@@ -333,7 +341,7 @@ class NativeAudioService {
         await checkCancelled();
       } else {
         // Create new player first so mpv has a valid callback target during old-player teardown
-        _audioPlayer = Player();
+        _audioPlayer = playerFactory();
         await applyLiveStreamMpvOptions(_audioPlayer);
         await checkCancelled();
         await _setupPlayerListeners();
@@ -452,7 +460,7 @@ class NativeAudioService {
       _errorSubscription = null;
       await _audioPlayer.stop();
       await _audioPlayer.dispose();
-      _audioPlayer = Player();
+      _audioPlayer = playerFactory();
       _isInitialized = false;
 
       _currentState = PlaybackState();
@@ -493,7 +501,7 @@ class NativeAudioService {
     await _errorSubscription?.cancel();
     _errorSubscription = null;
     _audioPlayer.dispose();
-    _audioPlayer = Player();
+    _audioPlayer = playerFactory();
     _currentState = PlaybackState();
     _isBuffering = false;
     _gaveUp = false;

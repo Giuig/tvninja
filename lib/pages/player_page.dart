@@ -95,8 +95,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   ///
   /// A locked channel hides the manual audio/video toggle (there is nothing
   /// to switch to -- the video player was never mounted, see `_buildBody`)
-  /// and changes how a stop or a failed start are handled: neither may fall
-  /// into video, only a plain [AudioModeReason.user] toggle does that.
+  /// and changes how a failed start is handled: it may not fall into video,
+  /// only a plain [AudioModeReason.user] toggle does that. (A Stop from the
+  /// notification never falls into video in either case, see [_stopAudio].)
   bool get _audioLocked =>
       _audioOnlyMode && _audioModeReason == AudioModeReason.detected;
 
@@ -530,20 +531,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             }
             break;
           case PlaybackControl.stop:
-            if (_isAudioModeActive) {
-              // A locked channel has no video to fall back to -- the player
-              // was never mounted (see `_buildBody`) -- so the notification's
-              // Stop button leaves it on the audio placeholder, stopped,
-              // rather than calling
-              // `_disableAudioMode()` (which would try to show video that
-              // was never there). A plain manual audio toggle keeps today's
-              // behaviour: Stop turns it off entirely.
-              if (_audioLocked) {
-                _stopLockedAudio();
-              } else {
-                _disableAudioMode();
-              }
-            }
+            // Stop means stop, in every sound mode: the sound ends and the
+            // page stays on the sound screen, stopped, with its play button
+            // to restart it. It never falls back to video -- that would
+            // start the picture playing, which is not what Stop asked for
+            // (and for a locked channel there is no video to show at all).
+            // Going back to video is the AppBar toggle's job alone.
+            if (_isAudioModeActive) _stopAudio();
             break;
         }
       }
@@ -865,15 +859,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _syncDerivedPlaybackState();
   }
 
-  /// The notification's Stop button on a *locked* channel.
+  /// The notification's Stop button, in any sound mode (a manual toggle or a
+  /// locked channel).
   ///
   /// Unlike [_disableAudioMode], this never leaves audio mode: the page
   /// stays on the audio placeholder, stopped, with its play button live to
-  /// restart the same channel (see
-  /// [_togglePlayPause]) -- there is no video to fall back to anyway, since
-  /// the video player is never mounted for a locked channel (`_buildBody`).
-  /// [_audioOnlyMode] and [_modeResolved] are therefore left exactly as
+  /// restart the same channel (see [_togglePlayPause]). [_audioOnlyMode],
+  /// [_audioModeReason] and [_modeResolved] are therefore left exactly as
   /// they were; only the "is native audio actually running" state changes.
+  /// The AppBar toggle (manual mode only) still leads back to video.
   ///
   /// `_isAudioModeActive` is cleared *before* the `stop()` await, for the
   /// same reason [_disableAudioMode] does it: `NativeAudioService.stop()`
@@ -882,10 +876,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// leads here in the first place -- and clearing the flag first makes
   /// that echo's own `if (_isAudioModeActive)` guard skip it, so this
   /// method cannot be re-entered by its own stop call.
-  Future<void> _stopLockedAudio() async {
+  ///
+  /// Generation-guarded: a zap or a manual toggle that lands while the stop
+  /// is in flight owns the state from then on, so the stopped-state reset
+  /// below must not overwrite what it set up (a fresh start's buffering
+  /// flag, say).
+  Future<void> _stopAudio() async {
+    final generation = _modeGeneration;
     _isAudioModeActive = false;
     await NativeAudioService.stop();
-    if (!mounted) return;
+    if (!mounted || generation != _modeGeneration) return;
     setState(() {
       _isPlaying = false;
       _isBuffering = false;
