@@ -16,7 +16,8 @@
 # each stop, as on a phone): after a Stop, and again after a second start and stop, no
 # playback session of the app may stay active, the playback service must be gone and
 # have logged onDestroy, and a second start must leave exactly one session and no
-# binding to the service. STOP_GATING below says whether a failure fails the run.
+# binding to the service. A failed check fails the run while STOP_GATING=1 (with 0 it is
+# only recorded in the summary).
 #
 # NON-GATING, recorded in $OUT/summary_extra.md and the files next to it:
 #   - the audio facts that bear on system equalizers (dumpsys audio, dumpsys
@@ -33,7 +34,7 @@ TESTOUT="$OUT/${1:-sound_mode_test.dart}.txt"
 WAIT_FOR_MARKER=${E2E_MARKER_TIMEOUT:-600}
 EXTRA="$OUT/summary_extra.md"
 # 1: a failed session-end check fails the run; 0: it is only recorded in the summary.
-STOP_GATING=0
+STOP_GATING=1
 
 adb_() { adb -s "$DEVICE" "$@"; }
 
@@ -86,7 +87,8 @@ capture_state() {
   adb_ shell dumpsys activity services "$PKG" > "$f.services.raw" 2>&1 || true
   tr -d '\r' < "$f.services.raw" > "$f.services.txt"
   S_RECORDS=$(grep -c 'ServiceRecord{.*TvNinjaBackgroundService' "$f.services.txt")
-  S_CONN=$(grep -c 'ConnectionRecord{' "$f.services.txt")
+  # Each binding shows up in three places in the dump; "All Connections" lists it once.
+  S_CONN=$(awk '/All Connections:/ { on = 1; next } on && /ConnectionRecord\{/ { n++; next } on { on = 0 } END { print n + 0 }' "$f.services.txt")
   adb_ logcat -d > "$f.logcat.raw" 2>&1 || true
   S_DESTROYS=$(tr -d '\r' < "$f.logcat.raw" | grep -c 'TvNinjaService: onDestroy called')
   adb_ shell dumpsys notification --noredact > "$f.notification.raw" 2>&1 || true
@@ -317,7 +319,7 @@ fi
   if [ "$STOP_GATING" -eq 1 ]; then mode=gating; else mode=non-gating; fi
   echo "#### Session end ($mode): $end_problems problem(s)"
   echo
-  echo "Taken while the app process is alive. sessions = media sessions of the app in dumpsys media_session; bindings = ConnectionRecords on its service in dumpsys activity services."
+  echo "Taken while the app process is alive. sessions = media sessions of the app in dumpsys media_session; bindings = the service's 'All Connections' entries in dumpsys activity services."
   echo '```'
   printf '%s' "$STATE_LOG"
   echo '```'

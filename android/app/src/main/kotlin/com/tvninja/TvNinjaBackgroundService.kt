@@ -37,6 +37,10 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
     private var isPlaying: Boolean = false
     private var isBuffering: Boolean = false
     private var hadAudioFocus: Boolean = false
+    // True from ACTION_START until the session is stopped. Commands that reach a
+    // service in any other state (a late update after Stop, a sticky restart
+    // with no intent) must not bring a session back to life.
+    private var sessionRunning: Boolean = false
 
     companion object {
         const val TAG = "TvNinjaService"
@@ -69,6 +73,11 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand: action=${intent?.action}")
+        if (intent?.action != ACTION_START && !sessionRunning) {
+            Log.d(TAG, "No session running, ignoring ${intent?.action}")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_PLAY -> {
                 Log.d(TAG, "ACTION_PLAY received")
@@ -251,6 +260,7 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
 
     fun startBackground(title: String, logo: String?) {
         Log.d(TAG, "startBackground called: title=$title")
+        sessionRunning = true
         acquireWakeLock()
         currentTitle = title
         currentLogo = logo
@@ -261,12 +271,31 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
 
     fun stopBackground() {
         Log.d(TAG, "stopBackground called")
+        sessionRunning = false
         abandonAudioFocus()
         releaseWakeLock()
+        deactivateMediaSession()
         stopForeground(STOP_FOREGROUND_REMOVE)
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.cancel(NOTIFICATION_ID)
         stopSelf()
+    }
+
+    /**
+     * Marks the media session stopped and inactive, so it stops being offered
+     * to media controls and no longer receives media buttons, even in the
+     * moment before the service is destroyed. The playback state carries no
+     * custom Stop action: there is nothing left to stop.
+     */
+    private fun deactivateMediaSession() {
+        mediaSession?.let {
+            it.setPlaybackState(
+                PlaybackStateCompat.Builder()
+                    .setState(PlaybackStateCompat.STATE_STOPPED, 0, 0f)
+                    .build()
+            )
+            it.isActive = false
+        }
     }
 
     private fun acquireWakeLock() {
@@ -416,7 +445,9 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
                     connection.connectTimeout = 5000
                     connection.readTimeout = 5000
                     val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
-                    if (bitmap != null) {
+                    // The download can outlast the session; a stopped one must not
+                    // get its notification back.
+                    if (bitmap != null && sessionRunning) {
                         val notification = buildNotification(title, this.isPlaying, this.isBuffering, bitmap)
                         val notificationManager = getSystemService(NotificationManager::class.java)
                         notificationManager.notify(NOTIFICATION_ID, notification)
@@ -449,7 +480,9 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
         notificationManager.cancel(NOTIFICATION_ID)
         abandonAudioFocus()
         releaseWakeLock()
+        deactivateMediaSession()
         mediaSession?.release()
+        mediaSession = null
         super.onDestroy()
     }
 }
