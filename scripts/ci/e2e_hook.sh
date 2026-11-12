@@ -178,6 +178,9 @@ foreground_start_stop_hook() {
   # Test 2: the same through NativeAudioService.
   if [ "$alive" -eq 1 ]; then
     if wait_marker E2E_EARLY_RACE_DONE 120; then
+      # Where test 3 starts in logcat: its service starts are counted from here. Test 2
+      # made its last start seconds ago, and test 3 begins after a pause.
+      play_offset=$(wc -l < "$LOGCAT" 2>/dev/null || echo 0)
       sleep 3
       capture_state "after the early-start rounds"
       [ "$S_RECORDS" -eq 0 ] || fail "after the early-start rounds: the playback service is still running ($S_RECORDS record(s))"
@@ -193,7 +196,6 @@ foreground_start_stop_hook() {
   if [ "$alive" -eq 1 ]; then
     if wait_marker E2E_EARLY_PLAY_BEGIN 60; then
       sleep 1
-      play_offset=$(wc -l < "$LOGCAT" 2>/dev/null || echo 0)
       if wait_marker E2E_EARLY_PLAYING 120; then
         sleep 3
         capture_state "early start, playing"
