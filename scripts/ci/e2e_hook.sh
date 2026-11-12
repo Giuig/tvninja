@@ -315,12 +315,20 @@ fi
 # command: it injects through the window, and on the emulator the app window had no focus
 # after the shade, so the injected key waited 5 s and raised an ANR that has nothing to do
 # with the receiver.
+# The dispatch command's own output and exit status are kept in DISPATCH_LOG (shown in the
+# summary), so a dispatch that never reached the media session service cannot hide behind
+# "no key events logged".
+DISPATCH_LOG=""
 send_key() { # $1 = cmd media_session name, $2 = keycode for the fallback
-  local out
-  out=$(adb_ shell cmd media_session dispatch "$1" 2>&1 | tr -d '\r')
+  local out rc how=dispatch
+  out=$(adb_ shell cmd media_session dispatch "$1" 2>&1); rc=$?
+  out=$(printf '%s' "$out" | tr -d '\r')
   case "$out" in
-    *"No shell command"*|*"nknown command"*|*"rror"*) adb_ shell input keyevent "$2" > /dev/null 2>&1 || true ;;
+    *"No shell command"*|*"nknown command"*|*"rror"*)
+      how="dispatch failed, fell back to input keyevent $2"
+      adb_ shell input keyevent "$2" > /dev/null 2>&1 || true ;;
   esac
+  DISPATCH_LOG="${DISPATCH_LOG}cmd media_session dispatch $1: exit=$rc via=$how output=[$(printf '%s' "$out" | head -c 300 | tr '\n' ' ')]"$'\n'
 }
 KEY_LOG=""
 if grep -q 'E2E_STOPPED_2' "$TESTOUT" 2>/dev/null; then
@@ -336,6 +344,8 @@ if grep -q 'E2E_STOPPED_2' "$TESTOUT" 2>/dev/null; then
     | grep -E "Process: $PKG,|Could not find any Service that handles" | sort -u | head -6)
   key_lines=$(grep -cE 'Sending KeyEvent .*(KEYCODE_MEDIA_PLAY|KEYCODE_HEADSETHOOK)' "$OUT/hook_logcat_after_keys.txt")
   KEY_LOG="- pid before=${pid_before:-none} after=${pid_after:-none}; key events logged by the media session service=$key_lines; crash lines=$(printf '%s' "$crash_lines" | grep -c .)"$'\n'
+  KEY_LOG="${KEY_LOG}${DISPATCH_LOG}"
+  KEY_LOG="${KEY_LOG}- reading: with the fix there is no media button receiver, so key_lines=0 (no 'Sending KeyEvent' line) is EXPECTED and is not a failure; the verdict is the same pid before and after and no crash lines. Without the fix the key is expected to reach the old receiver and the app to die with 'Could not find any Service that handles android.intent.action.MEDIA_BUTTON'."$'\n'
   if [ -z "$pid_before" ]; then
     end_check "media button: the app process was already gone before the key was sent, so nothing was checked"
   elif [ "$pid_after" != "$pid_before" ]; then
