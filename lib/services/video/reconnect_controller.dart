@@ -4,9 +4,12 @@ import 'dart:math';
 /// Engine-agnostic exponential-backoff reconnect controller.
 ///
 /// Modeled on `native_audio_service.dart`'s `_scheduleReconnect()` (background
-/// audio's proven backoff): same schedule — `min(30, 2 * (1 << attempt))` →
-/// 2s / 4s / 8s / 16s / 30s — the same 5-attempt ceiling, and the same
-/// reset-on-success semantics.
+/// audio's proven backoff): the same 5-attempt ceiling, the same
+/// reset-on-success semantics, and the schedule `min(30, 2 * (1 << attempt))`
+/// → 2s / 4s / 8s / 16s / 30s — except that a caller may shorten the **first**
+/// step of one particular [schedule] call (foreground video does, for a stream
+/// that was playing; see [schedule] for why and for why it must stay per call).
+/// Every later step is the same for every caller.
 ///
 /// Unlike the audio service (static/singleton — one process-wide background
 /// player), this is a plain instantiable class: foreground video needs one
@@ -45,6 +48,10 @@ class ReconnectController {
 
   static const int _maxAttempts = 5;
 
+  /// The wait before attempt number [attempt] (0-based): 2s, 4s, 8s, 16s, 30s.
+  static Duration delayFor(int attempt) =>
+      Duration(seconds: min(30, 2 * (1 << attempt)));
+
   int _attempt = 0;
   Timer? _timer;
 
@@ -69,16 +76,39 @@ class ReconnectController {
   ///
   /// If 5 attempts have already been made, calls [onGiveUp] immediately
   /// instead of scheduling another one.
-  void schedule() {
+  ///
+  /// [firstDelay] replaces the wait of the **first** attempt of a chain only
+  /// (`_attempt == 0`); every later step keeps its backoff, so a source that
+  /// stays dead is not hammered. It is per call, not per controller, on
+  /// purpose (2026-11-13):
+  ///
+  /// - It is for a caller that knows the engine is already dead and that the
+  ///   wait is lost broadcast: a live stream that was playing and then raised a
+  ///   fatal error (`ExoPlayer` goes IDLE and nothing re-prepares it, and the
+  ///   re-prepared stream resumes at the live edge). Measured on Rete 4: 2.0s
+  ///   of a ~2.4s skip was this wait.
+  /// - It is wrong for a load that never started, and for the restart after
+  ///   [onGiveUp]. There the error screen is only shown after a diagnostic
+  ///   probe (a real HTTP GET, hundreds of ms) returns, and it is discarded if
+  ///   a rebuild began in the meantime — a first step faster than the probe
+  ///   made a dead channel spin forever instead of showing its error. Those
+  ///   callers pass nothing and keep the 2s.
+  ///
+  /// A timer for `Duration.zero` still fires on the next event-loop turn, not
+  /// synchronously, so a caller can ask from inside the engine's own
+  /// notification. A plain [schedule] arriving while a shortened first timer is
+  /// pending re-arms it at the full first step, like any redundant call.
+  void schedule({Duration? firstDelay}) {
     _timer?.cancel();
     if (_attempt >= _maxAttempts) {
       _attempt = 0;
       onGiveUp();
       return;
     }
-    final delaySeconds = min(30, 2 * (1 << _attempt)); // 2,4,8,16,30
+    final delay =
+        _attempt == 0 && firstDelay != null ? firstDelay : delayFor(_attempt);
     final generation = _generation;
-    _timer = Timer(Duration(seconds: delaySeconds), () => _fire(generation));
+    _timer = Timer(delay, () => _fire(generation));
   }
 
   Future<void> _fire(int generation) async {
