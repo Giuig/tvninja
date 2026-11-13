@@ -34,7 +34,7 @@
 #
 # And integration_test/lock_screen_test.dart (see lock_screen_hook below): a screen lock
 # while a video plays must hand the stream over to sound, and the unlock must bring the
-# picture back. Informational for now.
+# picture back. Gating: a failed check fails the run.
 set -u
 
 OUT=${OUT:?OUT is required}
@@ -284,13 +284,13 @@ foreground_start_stop_hook() {
 # (onDestroy logged), exactly one AudioTrack and no OpenSL player, and the same app process
 # at the end.
 #
-# INFORMATIONAL for now (LOCK_GATING=0): a failed check is written to the summary and to the
-# hook's output and does not fail the run. It cannot go in the shim's informational-files,
-# because the shared runner starts the hook only for e2e-files. A crash of the app still
-# fails the job, since the runner scans the whole logcat for FATAL EXCEPTION.
-#
-# Promoting it to gating needs two green runs and a local video source; the clip is local.
-LOCK_GATING=0
+# GATING (LOCK_GATING=1): a failed check is written to the summary, to the hook's output (as a
+# ::warning annotation too) and fails the run. The file therefore sits in e2e-files, which is
+# also the only list the shared runner starts the hook for. A check that never got to run
+# (the clip did not play, the test did not start, the app did not come back to `resumed`) is
+# a failed check as well, never a pass. A crash of the app also fails the job, since the
+# runner scans the whole logcat for FATAL EXCEPTION.
+LOCK_GATING=1
 LOCK_PORT=8098
 LOCK_PROBLEMS=0
 LOCK_PROBLEM_LOG=""
@@ -298,6 +298,12 @@ lock_problem() {
   LOCK_PROBLEMS=$((LOCK_PROBLEMS + 1))
   LOCK_PROBLEM_LOG="${LOCK_PROBLEM_LOG}- $*"$'\n'
   echo "LOCK CHECK FAILED: $*"
+  # A workflow command: shows as an annotation on the run and the pull request. The message
+  # is one line; % and line breaks are escaped the way the runner expects.
+  local msg="$*"
+  msg=${msg//'%'/'%25'}
+  msg=${msg//$'\n'/'%0A'}
+  echo "::warning title=Lock check::${msg}"
 }
 
 # lock_snapshot LABEL: capture_state plus the two things only this test asks about. Sets
@@ -363,7 +369,7 @@ lock_permission_watch() {
 }
 
 lock_screen_hook() {
-  local pid_before pid_after offset slice="$OUT/hook_lock_logcat.txt" fatal destroys
+  local pid_before pid_after offset slice="$OUT/hook_lock_logcat.txt" fatal destroys summary_line
   SLEEP_AT=""
   WAKE_AT=""
   LOCK_PID_LINE=""
@@ -432,7 +438,24 @@ lock_screen_hook() {
   adb_ shell dumpsys power 2>&1 | tr -d '\r' | grep -m1 'mWakefulness=' > "$OUT/hook_lock_wakefulness_awake.txt" || true
 
   # ---- logcat over the whole lock, and the same process ----
-  wait_for E2E_LOCK_DONE 90 || true
+  if ! wait_for E2E_LOCK_DONE 90; then
+    lock_problem "marker E2E_LOCK_DONE never appeared in $TESTOUT (the test did not get through the lock and unlock)"
+  fi
+  # The app's own view of the lock: it must have been paused and then resumed again. The
+  # test logs this once the screen is back, or after its window (150 s) ran out.
+  summary_line=$(grep -m1 'E2E_LIFECYCLE_SUMMARY' "$TESTOUT" 2>/dev/null)
+  if [ -z "$summary_line" ]; then
+    lock_problem "the test never logged E2E_LIFECYCLE_SUMMARY, so the app's own lifecycle after the wake is unknown"
+  else
+    case "$summary_line" in
+      *sawPaused=true*) ;;
+      *) lock_problem "the app never went to paused when the screen turned off: $summary_line" ;;
+    esac
+    case "$summary_line" in
+      *resumedAfterPause=true*) ;;
+      *) lock_problem "the app did not reach resumed after the wake: $summary_line" ;;
+    esac
+  fi
   sleep 3
   pid_after=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
   adb_ logcat -b crash -d 2>&1 | tr -d '\r' > "$OUT/hook_lock_crash_buffer.txt" || true

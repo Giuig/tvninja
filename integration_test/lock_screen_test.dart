@@ -12,9 +12,12 @@
 // on the runner (10.0.2.2 is the emulator's alias for its loopback), started by the hook.
 // Overridable like the other tests: --dart-define=E2E_VIDEO_URL=...
 //
-// While the lock is still informational (see the shim), a clip that never starts playing
-// ends the test quietly with E2E_VIDEO_FAILED instead of failing it, and the hook reports
-// that. Set _strict to turn it into a failure once the check gates.
+// The clip, integration_test/fixtures/lock_clip.mp4, is synthetic (no third-party footage):
+// ffmpeg's `testsrc` pattern and a ~441 Hz sine, 128x96 at 4 fps, 2 minutes, H.264 baseline
+// and AAC mono, remuxed with `-movflags +faststart`.
+//
+// The check gates the run (see the shim): a clip that never starts playing, or an app that
+// does not come back to `resumed` after the wake, fails the test (_strict).
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -34,8 +37,9 @@ import 'package:video_player/video_player.dart';
 const _videoUrl = String.fromEnvironment('E2E_VIDEO_URL',
     defaultValue: 'http://10.0.2.2:8098/lock_clip.mp4');
 
-/// false: a clip that never plays ends the test quietly. true: it fails the test.
-const _strict = false;
+/// true: a clip that never plays, or an app that never resumes after the wake, fails the
+/// test. false: the test ends quietly with E2E_VIDEO_FAILED and the hook reports it.
+const _strict = true;
 
 // How long the hook gets to lock and unlock. The test leaves once the screen has come back
 // and the hook has had this long to read what Android holds after the unlock.
@@ -117,6 +121,10 @@ void main() {
       debugPrint('E2E_LIFECYCLE_SUMMARY sawPaused=${lifecycle.sawPaused} '
           'resumedAfterPause=${lifecycle.resumedAfterPause} '
           'states=${lifecycle.states.map((s) => s.name).join(',')}');
+      if (_strict && !lifecycle.resumedAfterPause) {
+        fail('the app did not come back to resumed after the screen was woken '
+            '(lifecycle: ${lifecycle.states.map((s) => s.name).join(',')})');
+      }
 
       if (lifecycle.resumedAfterPause) {
         // The screen is back, so frames run again and the page may be pumped and read.

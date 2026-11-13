@@ -5,8 +5,8 @@ name: Android E2E
 # while it plays (the media session offers Stop, the notification exists) and records the
 # audio facts. A screen lock while a video plays is exercised by lock_screen_test.dart:
 # the hook sends the sleep and wake keys and reads what Android holds for the app. That
-# check is informational for now: the file is listed with the gating ones only because the
-# shared runner starts the hook for those alone, and the hook never fails the run for it.
+# check gates the run like the other two: the hook fails the job when the sound handover or
+# the return to video does not happen, or when the check could not run at all.
 # The job itself lives in ninja_material's shared android-e2e.yml; this file
 # is the thin shim that owns this repo's triggers (underscore = this repo's own trigger,
 # hyphen = shared workflow_call).
