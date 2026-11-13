@@ -344,12 +344,12 @@ lock_poll() {
 lock_permission_watch() {
   local focus
   while :; do
-    focus=$(adb_ shell dumpsys window 2>/dev/null | tr -d '' | grep -m1 'mCurrentFocus')
+    focus=$(adb_ shell dumpsys window 2>/dev/null | tr -d '\r' | grep -m1 'mCurrentFocus')
     case "$focus" in
       *GrantPermissionsActivity*)
         adb_ shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS > /dev/null 2>&1 || true
         sleep 1
-        focus=$(adb_ shell dumpsys window 2>/dev/null | tr -d '' | grep -m1 'mCurrentFocus')
+        focus=$(adb_ shell dumpsys window 2>/dev/null | tr -d '\r' | grep -m1 'mCurrentFocus')
         case "$focus" in
           *GrantPermissionsActivity*)
             adb_ shell input keyevent KEYCODE_BACK > /dev/null 2>&1 || true
