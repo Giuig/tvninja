@@ -18,6 +18,7 @@
 *.cmake text eol=lf
 *.kt text eol=lf
 *.java text eol=lf
+*.sh text eol=lf
 
 # Binary
 *.png binary
