@@ -38,10 +38,11 @@ jobs:
   e2e:
     # A pull request runs only with the `e2e` label; every other trigger always runs.
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'e2e')
-    uses: Giuig/ninja_material/.github/workflows/android-e2e.yml@main
+    uses: Giuig/ninja_material/.github/workflows/android-e2e.yml@ci/hook-for-informational-files
     with:
       app-name: tvninja
       package: io.github.giuig.tvninja
       e2e-files: sound_mode_test.dart
+      informational-files: sound_mode_info_test.dart info_fail_test.dart
       local-stream: true
       emulator-audio: ${{ inputs.audio || 'a' }}
