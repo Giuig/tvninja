@@ -83,6 +83,17 @@ enum AudioModeReason {
   /// as strong audio) -- survives a zap regardless of the target's own
   /// evidence, exactly like the app behaved before this feature existed.
   user,
+
+  /// In audio mode because the screen was locked while video was playing, so
+  /// the page handed the picture over to sound. Unlike the other reasons it is
+  /// temporary by construction: unlocking returns to video, unless the person
+  /// did something in between (Stop, a manual toggle, a zap), which replaces
+  /// this reason with [user] and so cancels the return.
+  ///
+  /// Unrelated to the page's `_audioLocked` (the classifier lock, which is
+  /// [detected] only): a lock-caused sound mode keeps the video toggle
+  /// reachable, since the same channel plays as video on unlock.
+  screenLock,
 }
 
 /// The result of re-deciding the mode on a zap: the same policy decision
@@ -116,22 +127,31 @@ typedef ZapModeDecision = ({PlayerModeDecision decision, AudioModeReason reason}
 ///    (or already-[AudioModeReason.none]) current mode never carries a
 ///    non-strong target into audio -- there's nothing about *this* channel
 ///    that earned it, so it opens exactly as [decideMode] says: video.
+///
+/// [AudioModeReason.screenLock] behaves as [AudioModeReason.user] in all
+/// three rules, and is recorded as [AudioModeReason.user] afterwards: a zap
+/// while the lock handed the page over to sound is the person acting, so they
+/// stay in sound mode and the return to video on unlock is cancelled.
+/// ([AudioModeReason.screenLock] itself is never the *result* of a zap; only
+/// the lock handover sets it.)
 ZapModeDecision decideModeForZap({
   required AudioModeReason current,
   required StreamKindVerdict verdict,
 }) {
   final decision = decideMode(verdict);
+  final carriesUserChoice = current == AudioModeReason.user ||
+      current == AudioModeReason.screenLock;
 
   if (decision.audio) {
     return (
       decision: decision,
-      reason: current == AudioModeReason.user
+      reason: carriesUserChoice
           ? AudioModeReason.user
           : AudioModeReason.detected,
     );
   }
 
-  if (current == AudioModeReason.user) {
+  if (carriesUserChoice) {
     return (
       decision: PlayerModeDecision(
         audio: true,

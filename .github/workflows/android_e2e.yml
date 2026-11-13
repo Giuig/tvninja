@@ -3,7 +3,11 @@ name: Android E2E
 # Emulator tests (integration_test/) on an API 34 x86_64 image: sound mode is started
 # against a local stand-in station, and scripts/ci/e2e_hook.sh checks the Android side
 # while it plays (the media session offers Stop, the notification exists) and records the
-# audio facts. The job itself lives in ninja_material's shared android-e2e.yml; this file
+# audio facts. A screen lock while a video plays is exercised by lock_screen_test.dart:
+# the hook sends the sleep and wake keys and reads what Android holds for the app. That
+# check gates the run like the other two: the hook fails the job when the sound handover or
+# the return to video does not happen, or when the check could not run at all.
+# The job itself lives in ninja_material's shared android-e2e.yml; this file
 # is the thin shim that owns this repo's triggers (underscore = this repo's own trigger,
 # hyphen = shared workflow_call).
 #
@@ -42,6 +46,6 @@ jobs:
     with:
       app-name: tvninja
       package: io.github.giuig.tvninja
-      e2e-files: sound_mode_test.dart
+      e2e-files: sound_mode_test.dart foreground_start_stop_test.dart lock_screen_test.dart
       local-stream: true
       emulator-audio: ${{ inputs.audio || 'a' }}
