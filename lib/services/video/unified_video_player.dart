@@ -734,6 +734,18 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       // when the user switches to audio-only while a channel is still
       // opening.
       _loadGeneration++;
+      // The generation bump only supersedes an attempt that is *in flight*.
+      // Every other way the player rebuilds is a timer that outlives it: the
+      // reconnect chain re-arms itself after each attempt (`_fire`'s own
+      // `schedule()`), and the buffering watchdog may still be timing a stall.
+      // Left running, either puts a second video engine up some seconds later
+      // behind the sound screen (found 2026-11-13 by pumping 10 s after an
+      // audio-mode stop; the chain re-armed at +4 s). Both just stop: the
+      // controller's `cancel()` never calls `onGiveUp`, so nothing is surfaced
+      // (no error screen over the audio).
+      _reconnect.cancel();
+      _bufferingWatchdog.cancel();
+      _isReconnecting = false;
       await _engine?.stop();
     }
   }

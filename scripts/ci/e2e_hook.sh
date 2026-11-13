@@ -23,6 +23,10 @@
 # process is alive must not crash it (same pid afterwards, no crash of the app in logcat).
 # Gated together with the session-end checks.
 #
+# The same hook also serves integration_test/reconnect_audio_mode_test.dart (picked by $1, see
+# reconnect_audio_mode_hook below): a pending video reconnect chain must not outlive stop()
+# for sound mode.
+#
 # NON-GATING, recorded in $OUT/summary_extra.md and the files next to it:
 #   - the audio facts that bear on system equalizers (dumpsys audio, dumpsys
 #     media.audio_flinger, effect-session broadcasts in logcat);
@@ -101,6 +105,110 @@ capture_state() {
   STATE_LOG="${STATE_LOG}- $label: sessions=$S_SESSIONS active=$S_ACTIVE playing=$S_PLAYING states=[${S_STATES% }] playback services=$S_RECORDS bindings=$S_CONN onDestroy lines=$S_DESTROYS notifications=$S_NOTIF"$'\n'
 }
 STATE_LOG=""
+
+# ---- reconnect_audio_mode_test.dart: a pending video reconnect chain vs sound mode ------------
+# The test mounts the player on a dead channel (a 404 from scripts/ci/loop_stream.py), lets
+# the reconnect chain run its first retry, calls stop() as the player page does for sound
+# mode (the player stays mounted), starts sound mode and holds ~28 s. It logs
+# E2E_RECON_STOPPED (with the stop's epoch ms), E2E_RECON_SOUND_PLAYING and
+# E2E_RECON_HOLD_DONE, and fails itself if the chain's attempt counter moved after the stop.
+#
+# GATING (RECON_GATING=1, a failed check fails the run). All taken from outside the app:
+#   - no `ExoPlayerImpl: Init` (a new video engine) after the stop. The Init lines come from
+#     a `logcat` this hook starts itself (epoch timestamps), so the ring buffer cannot lose
+#     them; if that capture holds no Init at all the check could not see anything, and that
+#     is a failure too, never a pass;
+#   - at E2E_RECON_HOLD_DONE: exactly one OpenSL ES player (mpv, the sound mode) and no
+#     AudioTrack (ExoPlayer) of the app in dumpsys audio, the app's media session playing,
+#     exactly one playback service (the sound mode's), and a posted notification.
+# Measured in the same window as the unit test of the fix: without `_reconnect.cancel()` in
+# stop(), a second engine appears ~4 s after the stop (see the plan's TASKS.md).
+RECON_GATING=1
+RECON_PROBLEMS=0
+RECON_PROBLEM_LOG=""
+recon_problem() {
+  RECON_PROBLEMS=$((RECON_PROBLEMS + 1))
+  RECON_PROBLEM_LOG="${RECON_PROBLEM_LOG}- $*"$'\n'
+  echo "RECON CHECK FAILED: $*"
+  local msg="$*"
+  msg=${msg//'%'/'%25'}
+  msg=${msg//$'\n'/'%0A'}
+  echo "::warning title=Reconnect check::${msg}"
+}
+
+reconnect_audio_mode_hook() {
+  local initlog="$OUT/hook_exo_init.txt" cap_pid="" stop_ms stop_s late total uid players
+  echo "hook: reconnect check, waiting for E2E_RECON_STOPPED"
+  # Every ExoPlayer construction of this run, with an epoch timestamp.
+  adb_ wait-for-device > /dev/null 2>&1 || true
+  : > "$initlog"
+  adb_ logcat -v epoch 'ExoPlayerImpl:I' '*:S' > "$initlog" 2>&1 &
+  cap_pid=$!
+
+  if ! wait_for E2E_RECON_STOPPED 600; then
+    recon_problem "marker E2E_RECON_STOPPED never appeared in $TESTOUT (the dead channel never started a reconnect chain, or the test did not run)"
+  else
+    stop_ms=$(grep -m1 -o 'E2E_RECON_STOPPED attempt=[0-9]* ms=[0-9]*' "$TESTOUT" | sed 's/.*ms=//')
+    stop_s=$((stop_ms / 1000))
+    echo "hook: stop at epoch ms $stop_ms"
+    if wait_for E2E_RECON_SOUND_PLAYING 120; then
+      # Let the chain's would-be attempts (+4 s, +12 s after the stop) fall inside the window.
+      wait_for E2E_RECON_HOLD_DONE 60 || recon_problem "marker E2E_RECON_HOLD_DONE never appeared (the test did not get through its hold)"
+      uid=$(adb_ shell pm list packages -U "$PKG" 2>/dev/null | tr -d '\r' | grep -m1 "package:$PKG " | sed 's/.*uid://')
+      capture_state "reconnect hold"
+      adb_ shell dumpsys audio 2>&1 | tr -d '\r' | grep -E "u/pid:$uid/" | sed 's/^ *//' > "$OUT/hook_state_reconnect_hold.players.txt" || true
+      players="$OUT/hook_state_reconnect_hold.players.txt"
+      R_OPENSL=$(grep -c 'type:OpenSL ES' "$players")
+      R_TRACK=$(grep -c 'type:android.media.AudioTrack' "$players")
+      STATE_LOG="${STATE_LOG%$'\n'}; OpenSL players=$R_OPENSL AudioTracks=$R_TRACK"$'\n'
+      [ "$R_OPENSL" -eq 1 ] || recon_problem "during the hold: $R_OPENSL OpenSL ES player(s) of the app (want exactly 1, the sound mode): $STATE_LOG"
+      [ "$R_TRACK" -eq 0 ] || recon_problem "during the hold: $R_TRACK AudioTrack(s) of the app (want 0, a video engine is playing behind the sound): $STATE_LOG"
+      [ "$S_PLAYING" -eq 1 ] || recon_problem "during the hold: the app's media session is not playing (states: $S_STATES)"
+      [ "$S_RECORDS" -eq 1 ] || recon_problem "during the hold: $S_RECORDS playback service(s) (want the one sound-mode service)"
+      [ "$S_NOTIF" -ge 1 ] || recon_problem "during the hold: no playback notification posted"
+    else
+      recon_problem "marker E2E_RECON_SOUND_PLAYING never appeared in $TESTOUT (sound mode never played), so nothing after the stop was checked"
+    fi
+    # Give a late attempt a last chance to show before the capture is read.
+    sleep 3
+  fi
+
+  [ -n "$cap_pid" ] && kill "$cap_pid" 2> /dev/null
+  total=$(grep -c 'ExoPlayerImpl.*Init' "$initlog")
+  if [ -n "${stop_s:-}" ]; then
+    late=$(awk -v t="$stop_s" '/ExoPlayerImpl/ && /Init/ { if ($1 + 0 > t) n++ } END { print n + 0 }' "$initlog")
+    if [ "$total" -lt 2 ]; then
+      recon_problem "the logcat capture holds $total ExoPlayerImpl Init line(s) in the whole run (the chain alone makes at least 2), so the capture could not see engines and the check proves nothing"
+    elif [ "$late" -gt 0 ]; then
+      recon_problem "$late new video engine(s) (ExoPlayerImpl: Init) appeared after stop(), behind sound mode: the reconnect chain survived the stop ($(awk -v t="$stop_s" '/ExoPlayerImpl/ && /Init/ && $1 + 0 > t { printf "+%.1fs ", $1 - t }' "$initlog"))"
+    fi
+  fi
+
+  {
+    echo "### Reconnect chain vs sound mode hook"
+    echo
+    if [ "$RECON_PROBLEMS" -eq 0 ]; then echo "Gating: **pass**"; else echo "Gating: **FAIL** ($RECON_PROBLEMS)"; fi
+    echo
+    echo '```'
+    echo "ExoPlayerImpl Init lines in the run: ${total:-?}; after the stop: ${late:-?} (stop at epoch ms ${stop_ms:-none})"
+    echo "state during the hold:"
+    printf '%s' "${STATE_LOG:-(none)}"
+    printf '%s' "$RECON_PROBLEM_LOG"
+    echo '```'
+    echo
+    echo "Evidence: e2e-out/hook_exo_init.txt (every Init, epoch seconds), hook_state_reconnect_hold.*"
+  } >> "$EXTRA"
+  echo "hook: done, reconnect check problems=$RECON_PROBLEMS"
+  if [ "$RECON_GATING" -eq 1 ] && [ "$RECON_PROBLEMS" -gt 0 ]; then failures=$((failures + RECON_PROBLEMS)); fi
+  [ "$failures" -eq 0 ]
+}
+
+case "${1:-sound_mode_test.dart}" in
+  reconnect_audio_mode_test.dart)
+    reconnect_audio_mode_hook
+    exit $?
+    ;;
+esac
 
 echo "hook: waiting up to ${WAIT_FOR_MARKER}s for $MARKER in $TESTOUT"
 seen=0

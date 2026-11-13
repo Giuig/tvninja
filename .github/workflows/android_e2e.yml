@@ -42,6 +42,6 @@ jobs:
     with:
       app-name: tvninja
       package: io.github.giuig.tvninja
-      e2e-files: sound_mode_test.dart
+      e2e-files: sound_mode_test.dart reconnect_audio_mode_test.dart
       local-stream: true
       emulator-audio: ${{ inputs.audio || 'a' }}

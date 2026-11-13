@@ -529,10 +529,62 @@ void main() {
           .state<UnifiedVideoPlayerState>(find.byType(UnifiedVideoPlayer))
           .stop();
       rig.disposeGate!.complete();
-      await tester.pump(const Duration(seconds: 1));
+      // Long enough for the whole chain to have rebuilt twice over (2026-11-13,
+      // round-2 gatekeeper): the attempt in flight at the stop is cancelled by
+      // the load generation, but the chain's own re-arm used to survive it and
+      // put a second video engine up ~4 s later, behind the sound screen.
+      await tester.pump(const Duration(seconds: 10));
 
       expect(rig.engines, hasLength(1),
           reason: 'a stopped player must not rebuild video behind the audio');
+      await unmount(tester);
+    });
+
+    testWidgets(
+        'audio-mode stop() while the chain waits for its next attempt builds '
+        'no engine', (tester) async {
+      await mount(tester);
+      rig.last.firstFrame();
+      rig.failOpens = true;
+
+      rig.last.fail();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(rig.engines, hasLength(2), reason: 'attempt 1 ran and failed');
+      // Between attempts: nothing in flight, the 4 s step is pending.
+
+      await tester
+          .state<UnifiedVideoPlayerState>(find.byType(UnifiedVideoPlayer))
+          .stop();
+      for (var s = 0; s < 70; s++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      expect(rig.engines, hasLength(2),
+          reason: 'no further attempt may fire after the stop, and the chain '
+              'must not reach give-up behind the audio either');
+      expect(errors, isEmpty,
+          reason: 'cancelling the chain must not surface an error');
+      await unmount(tester);
+    });
+
+    testWidgets(
+        'audio-mode stop() while a stall is being timed builds no engine',
+        (tester) async {
+      await mount(tester);
+      rig.last.firstFrame(); // it was playing
+      rig.last.buffering(true);
+      await tester.pump(const Duration(seconds: 5)); // the 20 s timer is armed
+
+      await tester
+          .state<UnifiedVideoPlayerState>(find.byType(UnifiedVideoPlayer))
+          .stop();
+      for (var s = 0; s < 40; s++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      expect(rig.engines, hasLength(1),
+          reason: 'the stall timer of a stopped player must not rebuild video '
+              'behind the audio');
       await unmount(tester);
     });
   });
