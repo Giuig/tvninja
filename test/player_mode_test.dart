@@ -252,6 +252,54 @@ void main() {
       );
       expect(zap.decision.reason, video.toString());
     });
+
+    // A zap while the lock put the page in sound mode is the person acting,
+    // so it behaves exactly like a manual sound-mode choice: stay in sound
+    // mode, and the "return to video on unlock" is cancelled (the recorded
+    // reason becomes `user`, which `lockReturnActionFor` answers with `none`).
+    test(
+        'a lock-caused sound mode zapping to a non-strong target stays in '
+        'audio, unlocked, and the return is cancelled (reason user)', () {
+      for (final verdict in [video, provisionalAudio, StreamKindVerdict.unknown]) {
+        final zap = decideModeForZap(
+          current: AudioModeReason.screenLock,
+          verdict: verdict,
+        );
+        expect(zap.decision.audio, isTrue, reason: '$verdict');
+        expect(zap.decision.locked, isFalse, reason: '$verdict');
+        expect(zap.reason, AudioModeReason.user, reason: '$verdict');
+        expect(zap.decision.reason, verdict.toString(), reason: '$verdict');
+      }
+    });
+
+    test(
+        'a lock-caused sound mode zapping to a strong-audio target locks it '
+        'and records user, not detected', () {
+      final zap = decideModeForZap(
+        current: AudioModeReason.screenLock,
+        verdict: strongAudio,
+      );
+      expect(zap.decision.audio, isTrue);
+      expect(zap.decision.locked, isTrue);
+      expect(zap.reason, AudioModeReason.user);
+    });
+
+    test('no zap ever records screenLock: only the lock handover sets it', () {
+      for (final current in AudioModeReason.values) {
+        for (final verdict in [
+          strongAudio,
+          provisionalAudio,
+          video,
+          StreamKindVerdict.unknown,
+        ]) {
+          expect(
+            decideModeForZap(current: current, verdict: verdict).reason,
+            isNot(AudioModeReason.screenLock),
+            reason: '$current / $verdict',
+          );
+        }
+      }
+    });
   });
 
   group('playerBodyFor', () {

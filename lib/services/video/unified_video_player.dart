@@ -64,7 +64,39 @@ class UnifiedVideoPlayer extends StatefulWidget {
   State<UnifiedVideoPlayer> createState() => UnifiedVideoPlayerState();
 }
 
+/// How [UnifiedVideoPlayerState] builds its engine: the four callbacks it
+/// wires into whichever engine it creates. See
+/// [UnifiedVideoPlayerState.engineFactory].
+typedef PlayerEngineFactory = PlayerEngine Function({
+  required void Function(bool playing) onPlaying,
+  required void Function(Duration position) onPosition,
+  required void Function(bool buffering) onBuffering,
+  required void Function(Object error) onEngineError,
+});
+
+/// Whether an automatic video start (a reconnect attempt, a load that was
+/// waiting on an earlier teardown) may still go ahead after an `await`.
+///
+/// [shutDown] is the player's "stopped for the background" flag.
+/// [generationMatches] is whether no shutdown or restart has happened since
+/// the operation began: the flag alone is not enough, because a restart clears
+/// it again, and an operation from *before* the shutdown must still stand
+/// down rather than build a second engine over the restart's.
+bool videoMayAutoStart({
+  required bool shutDown,
+  required bool generationMatches,
+}) =>
+    !shutDown && generationMatches;
+
 class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
+  /// Test seam: when set, [_createEngine] returns what this builds instead of
+  /// an `ExoEngine` / `MpvEngine`, neither of which can run on the test host
+  /// (no ExoPlayer, no libmpv). Always null in the app; a test sets it and puts
+  /// it back to null when it finishes (the same shape as
+  /// `NativeAudioService.playerFactory`).
+  @visibleForTesting
+  static PlayerEngineFactory? engineFactory;
+
   /// The active playback engine: `ExoEngine` (Media3-backed `video_player`)
   /// on Android, `MpvEngine` (media_kit) everywhere else non-web. `kIsWeb`
   /// never reaches this field at all — see `build()`'s early return to
@@ -189,6 +221,27 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   bool _isSwitching = false;
   String? _pendingUrl;
 
+  /// True from [shutDownForBackground] until something explicit restarts the
+  /// player ([restartAfterShutDown], or a user channel change). While true
+  /// **nothing automatic may bring video back**: [play] does nothing,
+  /// [_initializePlayer] returns at once, the watchdog and reconnect call
+  /// sites are no-ops, and a reconnect that was already in flight stands down
+  /// after its next `await`.
+  ///
+  /// The screen-lock handover needs this to be a hard state rather than "an
+  /// engine that happens to be stopped": the sound mode that replaces the video
+  /// has its own failure fallback that calls [play], and the player's own
+  /// recovery would otherwise rebuild an engine and decode video at full
+  /// bitrate behind the lock.
+  bool _shutDown = false;
+
+  /// Bumped by every [shutDownForBackground] and every restart. An operation
+  /// that awaits (a reconnect attempt, a channel switch, a retry) captures it
+  /// first and stands down if it changed: [_shutDown] alone cannot tell an
+  /// operation that began *before* a shutdown from one that began after the
+  /// restart that cleared the flag again (see [videoMayAutoStart]).
+  int _shutDownEpoch = 0;
+
   /// The M3U's `#EXTVLCOPT:http-user-agent=` value, if any — some IPTV
   /// providers (e.g. RAI's relinker) reject requests with the wrong UA. Built
   /// once here (Task 3.3) so both engines take the same map rather than each
@@ -253,12 +306,12 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     _bufferingWatchdog = BufferingWatchdog(
       hasStartedPlaying: () => _hasStartedPlaying,
       onFirstLoadTimeout: () {
-        if (!mounted) return;
+        if (!mounted || _shutDown) return;
         _reconnect.cancel();
         _handleReconnectGiveUp();
       },
       onStalled: () {
-        if (!mounted) return;
+        if (!mounted || _shutDown) return;
         _isReconnecting = true;
         _reconnect.schedule();
       },
@@ -274,6 +327,11 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   void didUpdateWidget(UnifiedVideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url) {
+      // A channel change is an explicit user action, so it ends a shutdown for
+      // the background: this is the one place a user zap reaches the player
+      // (`_switchToUrl` is only ever called from here and from the guarded
+      // drains of an already-running operation).
+      _clearShutDown();
       if (_isSwitching) {
         // A switch or a reconnect attempt is already in flight and using
         // `_engine`. Both go through the same full teardown+reinit cycle
@@ -299,8 +357,16 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     }
   }
 
-  void _cleanup() {
+  void _cleanup() => unawaited(_cleanupNow());
+
+  /// [_cleanup]'s work, returning the engine teardown so a caller that needs
+  /// the old engine (and its network connection) fully gone can await it
+  /// ([shutDownForBackground]). Everything but the engine disposal happens
+  /// synchronously, exactly as before.
+  Future<void> _cleanupNow() {
     _loadGeneration++;
+    // Also forgets the stall history behind the live-edge sawtooth budget, not
+    // just the pending timer.
     _bufferingWatchdog.reset();
     _isSwitching = false;
     _pendingUrl = null;
@@ -309,9 +375,10 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     // final teardown on dispose) starts reconnect state from scratch.
     _reconnect.reset();
     _isReconnecting = false;
-    unawaited(_teardownPlayback());
+    final teardown = _teardownPlayback();
     _hasError = false;
     _errorMessage = '';
+    return teardown;
   }
 
   /// Tears down the current playback engine: disposes it (which internally
@@ -364,6 +431,15 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// no per-host exception list is needed. Routing is back to a flat
   /// platform decision with no URL inspection.
   PlayerEngine _createEngine() {
+    final factory = engineFactory;
+    if (factory != null) {
+      return factory(
+        onPlaying: _handleEnginePlaying,
+        onPosition: _handleEnginePosition,
+        onBuffering: _handleEngineBuffering,
+        onEngineError: _handleEngineError,
+      );
+    }
     if (!kIsWeb && Platform.isAndroid) {
       return ExoEngine(
         onPlaying: _handleEnginePlaying,
@@ -401,6 +477,10 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   }
 
   void _handleEngineBuffering(bool buffering) {
+    // A disposing engine's last events must not re-arm the watchdog the
+    // shutdown just reset: the timer would outlive the shutdown and could fire
+    // against whatever load the restart starts.
+    if (_shutDown) return;
     final changed = _isBuffering != buffering;
     _setBuffering(buffering);
     if (!changed) return;
@@ -427,7 +507,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// (or the user) noticed.
   void _handleEngineError(Object error) {
     debugPrint('[UnifiedVideoPlayer] engine-reported error: $error');
-    if (!mounted) return;
+    if (!mounted || _shutDown) return;
     _isReconnecting = true;
     _reconnect.schedule();
   }
@@ -463,6 +543,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       _pendingUrl = url;
       return;
     }
+    final epoch = _shutDownEpoch;
     _isSwitching = true;
     _pendingUrl = null;
 
@@ -482,8 +563,13 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       // user-initiated switch gets the same reconnect/backoff chance a
       // background reconnect does before giving up.
       await _teardownPlayback();
+      // A shutdown (or a shutdown and restart) happened while the old engine
+      // was going away: this switch is stale, and whatever superseded it owns
+      // `_isSwitching` and the next load now.
+      if (!_mayContinue(epoch)) return;
       await _initializePlayer(isReconnectAttempt: true);
     } catch (e) {
+      if (!_mayContinue(epoch)) return;
       _isSwitching = false;
       _isReconnecting = true;
       _reconnect.schedule();
@@ -500,6 +586,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       return;
     }
 
+    if (!_mayContinue(epoch)) return;
     _isSwitching = false;
 
     // If the user zapped again while we were opening, process that switch now
@@ -521,7 +608,8 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// finishes, preempting the reconnect chain rather than letting it race a
   /// user-chosen channel.
   Future<void> _attemptReconnect() async {
-    if (!mounted) return;
+    if (!mounted || _shutDown) return;
+    final epoch = _shutDownEpoch;
     // A stale first-frame flag would prevent the position listener from ever
     // detecting the reconnected stream's first frame again, which is what
     // calls _reconnect.reset() on success.
@@ -529,6 +617,11 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     _isSwitching = true;
     try {
       await _teardownPlayback();
+      // Shut down (or shut down and restarted) while the old engine was going
+      // away: building an engine here would put video back behind the lock, or
+      // a second engine over the restart's. The finally below leaves
+      // `_isSwitching` alone in that case.
+      if (!_mayContinue(epoch)) return;
       await _initializePlayer(isReconnectAttempt: true);
     } catch (_) {
       // Swallow here too (in addition to the controller's own catch): this
@@ -537,9 +630,13 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       // The controller's chain (schedule() called again after onRetry
       // returns) picks up the next attempt automatically.
     } finally {
-      _isSwitching = false;
+      // Only the operation that still owns the flag may clear it: after a
+      // shutdown it was already cleared, and a restart's own work may have
+      // set it again since.
+      if (_mayContinue(epoch)) _isSwitching = false;
     }
 
+    if (!_mayContinue(epoch)) return;
     if (_pendingUrl != null && mounted) {
       final next = _pendingUrl!;
       _pendingUrl = null;
@@ -583,7 +680,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
 
   void _handleReconnectGiveUp() {
     _isReconnecting = false;
-    if (!mounted) return;
+    if (!mounted || _shutDown) return;
     unawaited(_surfaceError(_hasStartedPlaying
         ? 'Stream lost — connection timed out'
         : 'Stream not responding — no data received'));
@@ -591,6 +688,12 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
 
   Future<void> _initializePlayer({bool isReconnectAttempt = false}) async {
     if (kIsWeb) {
+      return;
+    }
+    // Shut down for the background: nothing may start a video engine, however
+    // it got here (a reconnect attempt, a retry, a queued channel change).
+    if (_shutDown) {
+      debugPrint('[UnifiedVideoPlayer] load skipped: shut down for background');
       return;
     }
     final generation = ++_loadGeneration;
@@ -624,6 +727,9 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
         });
       }
     } catch (e) {
+      // A load that failed because the shutdown disposed its engine is not an
+      // error anyone should see (or probe the network about).
+      if (_shutDown) return;
       if (isReconnectAttempt) {
         // Don't surface an error mid auto-reconnect and don't set _hasError
         // (that would flash the error screen during an otherwise-invisible
@@ -645,6 +751,13 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   }
 
   Future<void> play() async {
+    if (_shutDown) {
+      // Shut down for the background: the sound mode that replaced the video
+      // calls this on its failure path, and `_engine?.play()` would recreate
+      // an engine lazily. Only [restartAfterShutDown] brings video back.
+      debugPrint('[UnifiedVideoPlayer] play() ignored: shut down for background');
+      return;
+    }
     if (kIsWeb) {
       widget.onPlayingChanged?.call(true);
     } else {
@@ -696,6 +809,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// path again first.
   Future<void> retry() async {
     if (kIsWeb) return;
+    final epoch = _shutDownEpoch;
     _reconnect.reset();
     _isReconnecting = false;
     if (mounted) {
@@ -705,8 +819,62 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       });
     }
     await _teardownPlayback();
+    // Shut down, or shut down and restarted, while the old engine was going
+    // away: the newer operation owns the next load.
+    if (!_mayContinue(epoch)) return;
     await _initializePlayer();
   }
+
+  /// Whether an operation that captured [epoch] before an `await` may carry
+  /// on after it. See [videoMayAutoStart].
+  bool _mayContinue(int epoch) => videoMayAutoStart(
+        shutDown: _shutDown,
+        generationMatches: epoch == _shutDownEpoch,
+      );
+
+  /// Ends the shutdown state, if it is set. Returns whether it was.
+  bool _clearShutDown() {
+    if (!_shutDown) return false;
+    _shutDown = false;
+    _shutDownEpoch++;
+    return true;
+  }
+
+  /// Stops the video completely because the app is being sent to the
+  /// background (the screen locked) and sound mode takes over.
+  ///
+  /// Unlike [stop], which only stops the engine and leaves the buffering
+  /// watchdog and the reconnect chain running, this tears down everything the
+  /// player would use to bring video back by itself: the engine and its
+  /// network connection (awaited, so the stream is not pulled twice once the
+  /// sound mode opens it), the watchdog timers and the sawtooth stall budget,
+  /// the reconnect timer and attempt count, any queued channel change, and any
+  /// error. A reconnect or channel switch already in flight stands down after
+  /// its next `await`. It stays that way until [restartAfterShutDown] or a
+  /// user channel change.
+  ///
+  /// Touches only this player: the sound mode's own recovery
+  /// (`NativeAudioService`) is not involved and keeps running for the sound
+  /// session. No-op on web, where a "background" is a hidden tab and the
+  /// player is an iframe this class does not own.
+  Future<void> shutDownForBackground() async {
+    if (kIsWeb) return;
+    _shutDown = true;
+    _shutDownEpoch++;
+    await _cleanupNow();
+  }
+
+  /// Brings video back after [shutDownForBackground]: clears the flag and
+  /// reloads the current channel from scratch, exactly like [retry]. Does
+  /// nothing if the player was not shut down (then there is nothing to
+  /// restart, and a needless reload would interrupt a picture that is playing).
+  Future<void> restartAfterShutDown() async {
+    if (!_clearShutDown()) return;
+    await retry();
+  }
+
+  /// Whether [shutDownForBackground] is in effect.
+  bool get isShutDown => _shutDown;
 
   bool get isPlaying => _isPlaying;
   bool get isReconnecting => _isReconnecting;
