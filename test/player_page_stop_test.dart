@@ -40,6 +40,9 @@ class _FakePlayerStream extends Fake implements mk.PlayerStream {
   Stream<bool> get buffering => const Stream<bool>.empty();
   @override
   Stream<bool> get completed => const Stream<bool>.empty();
+  // The audio service's stall detection listens to the position.
+  @override
+  Stream<Duration> get position => const Stream<Duration>.empty();
   @override
   Stream<String> get error => const Stream<String>.empty();
 }
