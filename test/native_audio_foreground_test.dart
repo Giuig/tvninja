@@ -369,4 +369,36 @@ void main() {
       expect(NativeAudioService.foregroundRefusalCount, before + 1);
     });
   });
+
+  group('whenStopsSettled', () {
+    test('is already done when no stop is running', () async {
+      await NativeAudioService.whenStopsSettled().timeout(
+          const Duration(seconds: 1),
+          onTimeout: () => fail('nothing is stopping, so there is nothing to wait for'));
+    });
+
+    test('completes only after a running stop has sent its stopBackground',
+        () async {
+      // A session with a player, so stop() takes the long road and sends
+      // `stopBackground` last.
+      await NativeAudioService.initialize();
+      final gate = Completer<Object?>();
+      answer = (call) =>
+          call.method == 'stopBackground' ? gate.future : Future<Object?>.value(true);
+
+      final stopping = NativeAudioService.stop();
+      await Future<void>.delayed(Duration.zero);
+      var settled = false;
+      final waiting = NativeAudioService.whenStopsSettled().then((_) => settled = true);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(methods(), contains('stopBackground'));
+      expect(settled, isFalse, reason: 'the stop is still in flight');
+
+      gate.complete(null);
+      await stopping;
+      await waiting;
+      expect(settled, isTrue);
+    });
+  });
 }

@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tvninja/config/config.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:tvninja/l10n/app_localizations.dart';
+import 'package:tvninja/pages/lock_handover_policy.dart';
 import 'package:tvninja/pages/player_mode.dart';
 import 'package:tvninja/pages/screen_wake_policy.dart';
 import 'package:tvninja/services/audio_output_service.dart';
@@ -16,6 +17,18 @@ import 'package:tvninja/services/video/stream_kind.dart';
 import 'package:tvninja/services/video/stream_kind_classifier.dart';
 import 'package:tvninja/services/video/unified_video_player.dart';
 import 'package:tvninja/widgets/channel_logo.dart';
+
+/// What the page saw at the moment the app began to leave the foreground,
+/// before anything (the video plugin pausing itself on `paused`, a late engine
+/// event) could change it. The inputs of [shouldHandOverOnLock] that describe
+/// the picture; the screen state is asked for separately.
+typedef _LockLatch = ({
+  bool wasPlayingVideo,
+  bool wasLoadingVideo,
+  bool inPip,
+  bool audioOnlyMode,
+  bool hasError,
+});
 
 class PlayerPage extends StatefulWidget {
   final Channel channel;
@@ -100,6 +113,35 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// notification never falls into video in either case, see [_stopAudio].)
   bool get _audioLocked =>
       _audioOnlyMode && _audioModeReason == AudioModeReason.detected;
+
+  /// The picture's state when the app began to leave the foreground (lifecycle
+  /// `hidden`), kept until it is back (`resumed`). The lock handover judges
+  /// this, not the live fields: by the time `paused` is handled the video
+  /// plugin has paused itself and the engine's own events follow, so a live
+  /// "is it playing" would already read the effect of the lock.
+  _LockLatch? _lockLatch;
+
+  /// Bumped on every `paused` (a new handover starts) and every `resumed` (the
+  /// screen is back): a handover still awaiting something stands down when it
+  /// changed. Separate from [_modeGeneration], which a person's actions bump:
+  /// an unlock must not look like one, and a zap must not disturb a handover
+  /// that only had a probe in flight.
+  int _lockEpoch = 0;
+
+  /// The return to video still running after a `resumed`, if any. A lock that
+  /// follows straight away waits for it, then judges the page as it was left.
+  Future<void>? _lockReturn;
+
+  /// The person paused the sound that the lock handed over to (from the lock
+  /// screen or a headset). Unlock then leaves the sound mode paused instead of
+  /// starting a picture. Only meaningful while [_audioModeReason] is
+  /// [AudioModeReason.screenLock]; reset when a handover starts.
+  bool _lockPausedByUser = false;
+
+  /// The person (or a headset unplug) paused the video itself. A paused video
+  /// that is still buffering must not read as "about to be heard" when the
+  /// screen locks. Cleared when the video plays again or the channel changes.
+  bool _videoPausedByUser = false;
 
   /// Drives the quick channel list so it can be centred on the current channel.
   ///
@@ -522,11 +564,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         switch (control) {
           case PlaybackControl.play:
             if (_isAudioModeActive) {
+              _lockPausedByUser = false;
               NativeAudioService.resume();
             }
             break;
           case PlaybackControl.pause:
             if (_isAudioModeActive) {
+              // Remembered for the unlock after a lock handover: pausing the
+              // sound there means "stay in sound mode", not "start a picture".
+              _lockPausedByUser = true;
               NativeAudioService.pause();
             }
             break;
@@ -537,7 +583,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             // start the picture playing, which is not what Stop asked for
             // (and for a locked channel there is no video to show at all).
             // Going back to video is the AppBar toggle's job alone.
-            if (_isAudioModeActive) _stopAudio();
+            //
+            // Also while a lock handover has switched the page to sound but
+            // the sound has not started yet (`_isAudioModeActive` is still
+            // false): the Stop must reach the half-started session, or the
+            // sound would start anyway a moment later.
+            if (_isAudioModeActive ||
+                (_audioOnlyMode &&
+                    _audioModeReason == AudioModeReason.screenLock)) {
+              _stopAudio();
+            }
             break;
         }
       }
@@ -559,8 +614,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     debugPrint(
         '[PlayerPage] audio becoming noisy - pausing (audio mode: $_isAudioModeActive)');
     if (_isAudioModeActive) {
+      _lockPausedByUser = true;
       NativeAudioService.pause();
     } else {
+      _videoPausedByUser = true;
       _playerKey.currentState?.pause();
     }
   }
@@ -568,6 +625,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // Anything a lock handover or return is still awaiting is moot.
+    _lockEpoch++;
     _playbackStateSubscription?.cancel();
     _controlSubscription?.cancel();
     _noisySubscription?.cancel();
@@ -597,12 +656,219 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  /// The lock handover's entry points. Everything here is Android's lock
+  /// screen: on the web `paused`/`hidden` only mean the tab is not visible and
+  /// there is no native service, so nothing below may run there.
+  ///
+  /// Flutter delivers `inactive`, `hidden`, `paused` on the way down and
+  /// `hidden`, `inactive`, `resumed` on the way up. The picture is latched on
+  /// the first `hidden`, while the video is still exactly as the person left
+  /// it; the handover itself starts on `paused`, when the screen can be asked
+  /// whether it is really off (the same transition is Home with picture-in-
+  /// picture off, the shade, a dismissed PiP window: the screen stays on).
+  ///
+  /// This observer is registered in [initState], before any video controller
+  /// exists, so it sees `paused` before the video plugin's own observer pauses
+  /// the picture.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused) {
-      // App going to background - audio continues via native foreground service
-    } else if (state == AppLifecycleState.resumed) {
-      // App coming to foreground
+    if (kIsWeb) return;
+    switch (state) {
+      case AppLifecycleState.hidden:
+        // Only the first one on the way down: `hidden` is also delivered on
+        // the way back up, when the picture is no longer what it was.
+        _lockLatch ??= _captureLockLatch();
+        debugPrint('[PlayerPage] lifecycle $state latch=$_lockLatch');
+      case AppLifecycleState.paused:
+        _lockLatch ??= _captureLockLatch();
+        debugPrint('[PlayerPage] lifecycle $state latch=$_lockLatch');
+        unawaited(_handOverForLock(++_lockEpoch));
+      case AppLifecycleState.resumed:
+        debugPrint('[PlayerPage] lifecycle $state latch=$_lockLatch '
+            'reason=$_audioModeReason');
+        _lockLatch = null;
+        _lockEpoch++;
+        final run = _returnFromLockIfNeeded();
+        _lockReturn = run;
+        unawaited(run.then<void>((_) {}, onError: (Object e) {
+          debugPrint('[PlayerPage] return from lock failed: $e');
+        }).whenComplete(() {
+          if (identical(_lockReturn, run)) _lockReturn = null;
+        }));
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.detached:
+        break;
+    }
+  }
+
+  /// The picture as it is right now, for [shouldHandOverOnLock].
+  ///
+  /// A video that is not playing but is still opening or buffering counts as
+  /// loading -- the person pressed play or zapped and would hear it as soon as
+  /// it arrives -- unless they paused it themselves. A paused video is neither:
+  /// a lock must not start sound the person had stopped (a known complaint
+  /// about other players), so it stays paused.
+  _LockLatch _captureLockLatch() {
+    final videoMode = _modeResolved && !_audioOnlyMode && !_isAudioModeActive;
+    return (
+      wasPlayingVideo: videoMode && _isPlaying,
+      wasLoadingVideo:
+          videoMode && !_isPlaying && _isVideoBuffering && !_videoPausedByUser,
+      inPip: _isInPipMode,
+      audioOnlyMode: _audioOnlyMode,
+      hasError: _hasError,
+    );
+  }
+
+  /// The policy's answer for [latch] and a screen state. The live fields are
+  /// ORed in so that something that arrived since the latch (an error, PiP, a
+  /// channel that turned out to be audio) can only prevent a handover.
+  bool _mayHandOver(_LockLatch latch, {required bool screenInteractive}) =>
+      shouldHandOverOnLock(
+        wasPlayingVideo: latch.wasPlayingVideo,
+        wasLoadingVideo: latch.wasLoadingVideo,
+        audioOnlyMode: latch.audioOnlyMode || _audioOnlyMode,
+        hasError: latch.hasError || _hasError,
+        inPip: latch.inPip || _isInPipMode,
+        screenInteractive: screenInteractive,
+        isWeb: kIsWeb,
+      );
+
+  /// Whether the handover that began at [epoch] and committed at [generation]
+  /// still owns the page: the screen has not come back, and nothing the person
+  /// did (Stop, a toggle, a zap) replaced the reason.
+  bool _lockHandoverIsCurrent(int epoch, int generation) =>
+      mounted &&
+      epoch == _lockEpoch &&
+      generation == _modeGeneration &&
+      _audioModeReason == AudioModeReason.screenLock;
+
+  /// On `paused`: if the screen really went off while a video was playing (or
+  /// about to), hand the picture over to sound mode so the stream keeps going.
+  ///
+  /// The foreground service goes first: the app is already on its way to the
+  /// background, and a service started only after the stream has opened (up to
+  /// ten seconds later) would be refused. Then the video is shut down (so
+  /// nothing can bring it back behind the lock) and the sound mode opens the
+  /// same stream. Nothing here ever shows an error or falls back to video: the
+  /// person is not looking, and unlocking returns to video anyway.
+  ///
+  /// Every `await` re-checks [_lockEpoch] / [_modeGeneration], see
+  /// [_lockHandoverIsCurrent]. Whatever superseded the handover is also what
+  /// cleans up after it: an unlock ([_returnFromLockIfNeeded]), a Stop
+  /// ([_stopAudio]), a zap or a manual toggle (their own mode changes).
+  Future<void> _handOverForLock(int epoch) async {
+    // A return from an earlier lock may still be stopping its sound: a
+    // handover started now would race it. Wait, then judge the page as the
+    // return left it (the latch caught it mid-return).
+    final pendingReturn = _lockReturn;
+    if (pendingReturn != null) {
+      try {
+        await pendingReturn;
+      } catch (_) {}
+      if (!mounted || epoch != _lockEpoch) return;
+      _lockLatch = _captureLockLatch();
+    }
+    final latch = _lockLatch;
+    if (latch == null) return;
+
+    // Nothing to hand over (paused, error, PiP, already sound): do not even
+    // ask the native side about the screen.
+    if (!_mayHandOver(latch, screenInteractive: false)) {
+      debugPrint('[PlayerPage] lock: nothing to hand over latch=$latch');
+      return;
+    }
+    final decisionGeneration = _modeGeneration;
+    final interactive = await NativeAudioService.isScreenInteractive();
+    if (!mounted ||
+        epoch != _lockEpoch ||
+        decisionGeneration != _modeGeneration) {
+      return;
+    }
+    if (!_mayHandOver(latch, screenInteractive: interactive)) {
+      debugPrint('[PlayerPage] lock: not handing over '
+          '(screen interactive=$interactive) latch=$latch');
+      return;
+    }
+
+    // Committed. From here the page is "in sound mode because of the lock",
+    // which is what makes an unlock return to video and what any person's
+    // action replaces.
+    final generation = ++_modeGeneration;
+    _audioModeReason = AudioModeReason.screenLock;
+    _lockPausedByUser = false;
+    final channel = _currentChannel;
+    debugPrint('[PlayerPage] lock handover: starting for ${channel.name}');
+
+    // Read before the start: a refusal can be reported after the start call
+    // has already answered `true`.
+    final refusalsBefore = NativeAudioService.foregroundRefusalCount;
+    // A sound session that is still being stopped sends its `stopBackground`
+    // last, which would stop the service started below.
+    await NativeAudioService.whenStopsSettled();
+    if (!_lockHandoverIsCurrent(epoch, generation)) return;
+
+    final started = await NativeAudioService.startForegroundEarly(
+      title: channel.name,
+      logo: channel.logo,
+    );
+    if (!_lockHandoverIsCurrent(epoch, generation)) return;
+    if (!started ||
+        NativeAudioService.foregroundRefusalCount != refusalsBefore) {
+      // Nothing was shut down and there is no service to stop. The video, which
+      // `video_player` paused for the lock, resumes by itself on unlock.
+      debugPrint('[PlayerPage] lock handover: the foreground service was '
+          'refused, leaving the video alone');
+      _audioModeReason = AudioModeReason.none;
+      return;
+    }
+
+    // The video goes down and the page switches to its sound screen in one
+    // step, so a Stop or an unlock arriving from here on finds a consistent
+    // page. (No frame runs while the app is paused: the video widget stays
+    // mounted, shut down, until the screen is back.) The shutdown itself is
+    // awaited before the sound opens the stream, so it is not pulled twice.
+    final shutdown = _shutDownVideoForLock();
+    await _enterAudioModeState(shutDownVideo: true);
+    await shutdown;
+    if (!_lockHandoverIsCurrent(epoch, generation)) return;
+
+    await _startNativeAudio(generation: generation);
+    debugPrint('[PlayerPage] lock handover: done '
+        '(audio active=$_isAudioModeActive)');
+  }
+
+  /// Shuts the mounted video player down for a lock handover. Never throws:
+  /// a failing engine disposal must not abandon the handover half-done, since
+  /// the player's own state already says it is shut down.
+  Future<void> _shutDownVideoForLock() async {
+    try {
+      await _playerKey.currentState?.shutDownForBackground();
+    } catch (e) {
+      debugPrint('[PlayerPage] shutting the video down failed: $e');
+    }
+  }
+
+  /// On `resumed`: leave the sound mode the lock caused, unless the person
+  /// took it over in the meantime (their action replaced the reason).
+  Future<void> _returnFromLockIfNeeded() async {
+    final action = lockReturnActionFor(
+      reason: _audioModeReason,
+      audioPausedByUser: _lockPausedByUser,
+    );
+    if (action != LockReturnAction.none) {
+      debugPrint('[PlayerPage] lock return: $action');
+    }
+    switch (action) {
+      case LockReturnAction.none:
+        return;
+      case LockReturnAction.stayInAudio:
+        // Paused on the lock screen: stay in sound mode, from now on as the
+        // person's own choice (the toggle goes back to video).
+        _audioModeReason = AudioModeReason.user;
+        _lockPausedByUser = false;
+      case LockReturnAction.returnToVideo:
+        await _disableAudioMode();
     }
   }
 
@@ -676,6 +942,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// wrap this together with [_startNativeAudio] in their own try/catch,
   /// exactly as the two were one method before this split.
   ///
+  /// [shutDownVideo] is the lock handover's variant: the caller has already
+  /// shut the video player down (it cannot be started again by anything but an
+  /// explicit restart), so there is no `stop()` to await and the whole state
+  /// change happens before this returns. It also clears [_isPlaying]: that
+  /// flag still holds the video's last word, and a late "playing" event from
+  /// the engine that was just disposed must not make the sound screen claim
+  /// something is playing (the video's own callback ignores such events while
+  /// the lock owns the page, see `_buildBody`).
+  ///
   /// Also the single place that flips [_modeResolved] to `true` for a channel
   /// that is entering audio mode -- deliberately in the *same* `setState` as
   /// [_audioOnlyMode], so the two fields change on the same frame and
@@ -689,7 +964,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// looks at [_audioOnlyMode]. Setting it here, rather than at each call
   /// site, means every path into audio mode -- the async resolve, the manual
   /// toggle, and any future caller -- gets it for free.
-  Future<void> _enterAudioModeState() async {
+  Future<void> _enterAudioModeState({bool shutDownVideo = false}) async {
     if (kIsWeb) {
       setState(() {
         _audioOnlyMode = true;
@@ -704,13 +979,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       return;
     }
 
-    await _playerKey.currentState?.stop();
+    if (!shutDownVideo) await _playerKey.currentState?.stop();
     // Show the audio placeholder with spinner immediately — before play() is
     // called — so the user sees loading feedback from the very first frame.
     setState(() {
       _audioOnlyMode = true;
       _modeResolved = true;
       _isBuffering = true;
+      if (shutDownVideo) _isPlaying = false;
       // Switching mode is a fresh attempt. A video error left set here kept
       // `_buildBody()` on the error screen while audio played behind it.
       _hasError = false;
@@ -748,13 +1024,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// internally and returns `false`), so the only new risk this method's
   /// extra call sites introduce is calling `setState` after this State was
   /// disposed while the request was in flight -- guarded below.
-  Future<void> _startNativeAudio() async {
+  ///
+  /// [generation] is the lock handover's: it started this sound, so when the
+  /// mode generation has moved on by the time the start answers (the screen
+  /// came back, or the person pressed Stop), whoever moved it owns the state
+  /// and this must change nothing -- above all a start cancelled by that Stop
+  /// must not read as a failure and fall back to video. The other callers pass
+  /// nothing and keep their behaviour.
+  ///
+  /// While the lock owns the page ([AudioModeReason.screenLock]) a failed start
+  /// shows nothing and never falls back to video: nobody is looking, the video
+  /// is shut down, and the unlock starts it afresh.
+  Future<void> _startNativeAudio({int? generation}) async {
     final success = await NativeAudioService.play(
       url: _currentChannel.url,
       title: _currentChannel.name,
       logo: _currentChannel.logo,
     );
     if (!mounted) return;
+    if (generation != null && generation != _modeGeneration) return;
 
     if (success) {
       setState(() {
@@ -774,6 +1062,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // `_isAudioModeActive` was true, so the error listener dropped it.
       final error = NativeAudioService.lastError;
       if (error != null) _showAudioError(error);
+    } else if (_audioModeReason == AudioModeReason.screenLock) {
+      // The stream would not open behind the lock. `NativeAudioService.play`
+      // already ended the foreground service it had been given. No error
+      // screen (it would greet the person on unlock) and no video fallback.
+      debugPrint('[PlayerPage] lock handover: the sound did not start');
+      setState(() => _isBuffering = false);
     } else if (_audioLocked) {
       // Locked: a channel that locks audio never falls into video -- it
       // never mounts `UnifiedVideoPlayer` in the first place, see
@@ -827,27 +1121,31 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<void> _disableAudioMode() async {
     // Symmetric with `_enableAudioMode`: also supersedes a still-in-flight
     // auto-resolve, so it can never re-enter audio mode out from under a
-    // user who just switched back to video.
+    // user who just switched back to video. It supersedes a lock handover that
+    // is still starting its sound the same way.
     _modeGeneration++;
+    // The return after a lock handover comes through here too. Its sound may
+    // still be starting (nothing active yet, but the foreground service up or
+    // opening), so ending a lock-caused sound mode always ends the session.
+    final endsLockSound = _audioModeReason == AudioModeReason.screenLock;
     _audioModeReason = AudioModeReason.none;
+    _lockPausedByUser = false;
 
-    if (_isAudioModeActive) {
-      // Cleared *before* the `stop()` await, not after: stopping the native
-      // side round-trips through Android back into this page's own control
-      // listener as its own stop event (the same one the notification's Stop
-      // button raises), and that listener calls this very method again while
-      // it is still mid-await if it still reads `_isAudioModeActive == true`.
-      // Clearing it first makes that reentrant call a no-op (its own
-      // `if (_isAudioModeActive)` guard skips straight past the native stop)
-      // instead of a second, redundant pass through generation bump, native
-      // stop and this state's `setState`.
+    if (_isAudioModeActive || endsLockSound) {
+      // Cleared *before* the `stop()` await, not after: the playback,
+      // buffering and error listeners all ignore a session while this is
+      // false, so the session being torn down cannot repaint the page, and a
+      // Stop pressed while the stop is in flight (the notification, a media
+      // key) finds nothing active, so it does not start a second stop of the
+      // same session.
+      // (`stop()` itself raises no `stopRequested` event: only the
+      // notification and media-session buttons do.)
       _isAudioModeActive = false;
       await NativeAudioService.stop();
+      if (!mounted) return;
     }
 
-    try {
-      _playerKey.currentState?.play();
-    } catch (_) {}
+    _restartVideoAfterAudio();
 
     setState(() {
       _audioOnlyMode = false;
@@ -859,8 +1157,31 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _syncDerivedPlaybackState();
   }
 
-  /// The notification's Stop button, in any sound mode (a manual toggle or a
-  /// locked channel).
+  /// Starts the video again now that sound mode has ended.
+  ///
+  /// A player that was shut down for a lock handover cannot be started by
+  /// `play()` (it ignores it on purpose) and is still mounted when no frame ran
+  /// between the unlock and this call: it is restarted explicitly, reloading
+  /// the channel. If a frame did run, the player was unmounted with the sound
+  /// screen and there is nothing to restart here: the `setState` that follows
+  /// mounts a fresh one, which starts by itself. Any other mounted player (the
+  /// person stopped the sound; nothing shut the video down) just plays.
+  void _restartVideoAfterAudio() {
+    final player = _playerKey.currentState;
+    if (player == null) return;
+    try {
+      if (player.isShutDown) {
+        unawaited(player.restartAfterShutDown().catchError((Object e) {
+          debugPrint('[PlayerPage] restarting the video failed: $e');
+        }));
+      } else {
+        player.play();
+      }
+    } catch (_) {}
+  }
+
+  /// The notification's Stop button, in any sound mode (a manual toggle, a
+  /// locked channel, or the sound a screen lock handed the video over to).
   ///
   /// Unlike [_disableAudioMode], this never leaves audio mode: the page
   /// stays on the audio placeholder, stopped, with its play button live to
@@ -870,18 +1191,28 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// The AppBar toggle (manual mode only) still leads back to video.
   ///
   /// `_isAudioModeActive` is cleared *before* the `stop()` await, for the
-  /// same reason [_disableAudioMode] does it: `NativeAudioService.stop()`
-  /// round-trips through Android back into this page's own `controlStream`
-  /// listener as its own `stopRequested` event -- the exact event that
-  /// leads here in the first place -- and clearing the flag first makes
-  /// that echo's own `if (_isAudioModeActive)` guard skip it, so this
-  /// method cannot be re-entered by its own stop call.
+  /// same reason [_disableAudioMode] does it: the page's playback, buffering
+  /// and error listeners ignore a session while it is false, and a second
+  /// Stop (the notification pressed twice, a media key) arriving during the
+  /// await finds nothing active, so this method is not re-entered. (`stop()`
+  /// raises no `stopRequested` event of its own.)
+  ///
+  /// A Stop while the lock owns the page ([AudioModeReason.screenLock]) is the
+  /// person acting: the reason becomes [AudioModeReason.user], which cancels the
+  /// return to video on unlock, and the generation moves on so a handover that
+  /// is still starting its sound stands down. The page stays on the sound
+  /// screen; it never goes back to video behind the lock.
   ///
   /// Generation-guarded: a zap or a manual toggle that lands while the stop
   /// is in flight owns the state from then on, so the stopped-state reset
   /// below must not overwrite what it set up (a fresh start's buffering
   /// flag, say).
   Future<void> _stopAudio() async {
+    if (_audioModeReason == AudioModeReason.screenLock) {
+      _audioModeReason = AudioModeReason.user;
+      _lockPausedByUser = false;
+      _modeGeneration++;
+    }
     final generation = _modeGeneration;
     _isAudioModeActive = false;
     await NativeAudioService.stop();
@@ -1015,8 +1346,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         // between a fresh start and its own result landing).
         _startNativeAudio();
       case PlayPauseAction.pauseVideo:
+        _videoPausedByUser = true;
         _playerKey.currentState?.pause();
       case PlayPauseAction.playVideo:
+        _videoPausedByUser = false;
         _playerKey.currentState?.play();
     }
   }
@@ -1032,6 +1365,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // rather than leaving the play/pause control live on the strength of
       // the *previous* channel's last engine event.
       _isVideoBuffering = true;
+      _videoPausedByUser = false;
     });
     _syncDerivedPlaybackState();
     _followCurrentChannelIfVisible();
@@ -1050,6 +1384,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // rather than leaving the play/pause control live on the strength of
       // the *previous* channel's last engine event.
       _isVideoBuffering = true;
+      _videoPausedByUser = false;
     });
     _syncDerivedPlaybackState();
     _followCurrentChannelIfVisible();
@@ -1085,6 +1420,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // Same reason as the next/previous paths: the new stream has reported
       // nothing yet, so do not leave the control live on stale state.
       _isVideoBuffering = true;
+      _videoPausedByUser = false;
     });
     _syncDerivedPlaybackState();
     context.read<AppStatsNotifier>().addToRecentlyWatched(_currentChannel);
@@ -1138,12 +1474,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // already shows.
     //
     // `_isAudioModeActive` is cleared *before* the `stop()` await for the
-    // same reason `_finishZap`'s audio -> video branch does: stopping the
-    // native side round-trips back into `controlStream` as its own
-    // `stopRequested` event, which reentrantly calls `_disableAudioMode()`
-    // while it still reads `_isAudioModeActive == true` -- bumping
-    // `_modeGeneration` out from under this very call and making the
-    // generation check below discard the probe this method is about to run.
+    // same reason `_finishZap`'s audio -> video branch does: the page's
+    // listeners ignore a session while it is false, and a Stop pressed while
+    // the stop is in flight finds nothing active, so it cannot call
+    // `_stopAudio()` and bump `_modeGeneration` out from under this very call
+    // -- which would make the generation check below discard the probe this
+    // method is about to run.
     if (_isAudioModeActive) {
       _isAudioModeActive = false;
       await NativeAudioService.stop();
@@ -1209,14 +1545,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // `_disableAudioMode` already makes, kept for the same reason).
       //
       // `_isAudioModeActive` is cleared *before* the `stop()` await, not
-      // after: stopping the native side round-trips through Android back
-      // into `controlStream` as its own `stopRequested` event (the same
-      // path the notification's Stop button uses), which this page's
-      // listener turns into a reentrant `_disableAudioMode()` call whenever
-      // it still reads `_isAudioModeActive == true`. Clearing it first makes
-      // that reentrant call a no-op instead of a second, competing state
-      // change that would bump `_modeGeneration` again and make this call
-      // discard the very decision it was about to apply.
+      // after: the page's listeners ignore a session while it is false, and a
+      // Stop pressed while the stop is in flight (the notification, a media
+      // key) finds nothing active, so it cannot call `_stopAudio()` and bump
+      // `_modeGeneration` again, which would make this call discard the very
+      // decision it was about to apply. (`stop()` raises no `stopRequested`
+      // event of its own.)
       _isAudioModeActive = false;
       await NativeAudioService.stop();
       if (!mounted || generation != _modeGeneration) return;
@@ -1269,6 +1603,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// same error screen video shows. Retry there restarts the audio stream
   /// (see `_buildError`).
   void _showAudioError(String message) {
+    // The lock owns the page: nobody is looking, the unlock returns to video
+    // and starts it afresh, so an error screen would only greet the person on
+    // return. (No new string either way.)
+    if (_audioModeReason == AudioModeReason.screenLock) {
+      debugPrint('[PlayerPage] audio error while locked, not shown: $message');
+      return;
+    }
     setState(() {
       _hasError = true;
       _errorMessage = message;
@@ -1985,7 +2326,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // gates rather than resetting the flag.
       stretchToFill: _isFullscreen && _stretchToFill && !_isInPipMode,
       onPlayingChanged: (playing) {
-        if (mounted && !_isAudioModeActive && _isPlaying != playing) {
+        if (!mounted) return;
+        // While the lock owns the page this player is shut down (or about to
+        // be): whatever it still reports is the last word of an engine that
+        // was just disposed, not the state of the sound that replaced it.
+        if (_audioModeReason == AudioModeReason.screenLock) return;
+        if (playing) _videoPausedByUser = false;
+        if (!_isAudioModeActive && _isPlaying != playing) {
           setState(() {
             _isPlaying = playing;
           });

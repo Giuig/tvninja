@@ -814,7 +814,34 @@ class NativeAudioService {
     }
   }
 
+  /// How many [stop] calls are running, and the completer [whenStopsSettled]
+  /// hands out while any is.
+  static int _stopsRunning = 0;
+  static Completer<void>? _stopsDone;
+
+  /// Completes once no [stop] is running any more (at once if none is).
+  ///
+  /// A [stop] sends `stopBackground` as its very last step, after tearing the
+  /// player down, so a foreground service started while one is still running
+  /// would be stopped by it. Whoever is about to start the service
+  /// ([startForegroundEarly]) waits for this first.
+  static Future<void> whenStopsSettled() =>
+      _stopsDone?.future ?? Future<void>.value();
+
   static Future<bool> stop() async {
+    _stopsRunning++;
+    _stopsDone ??= Completer<void>();
+    try {
+      return await _stopNow();
+    } finally {
+      if (--_stopsRunning == 0) {
+        _stopsDone!.complete();
+        _stopsDone = null;
+      }
+    }
+  }
+
+  static Future<bool> _stopNow() async {
     try {
       if (kIsWeb) return true;
 

@@ -194,11 +194,11 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// UI exists yet, so this phase only makes the state available.
   bool _isReconnecting = false;
 
-  /// Engine-agnostic backoff controller (Phase 2). Nothing about its
-  /// logic/API changed in Phase 3 — it still only ever calls through
-  /// [_reopenCurrentUrl] / [_teardownPlayback] / [_attemptReconnect], which
-  /// now delegate to whichever [PlayerEngine] is active instead of touching
-  /// mpv directly.
+  /// Engine-agnostic backoff controller. It only ever calls
+  /// [_attemptReconnect] (its `onRetry`), which tears the engine down with
+  /// [_teardownPlayback] and builds a fresh one through [_initializePlayer],
+  /// whichever [PlayerEngine] is active. (`_reopenCurrentUrl` is the *audio*
+  /// service's reconnect step, in `NativeAudioService`: this class has none.)
   late final ReconnectController _reconnect;
 
   /// Bumped by every action that starts a new load or tears the current one
