@@ -31,6 +31,10 @@
 # The same hook also serves integration_test/foreground_start_stop_test.dart (picked by $1,
 # see foreground_start_stop_hook below): a start of the playback service followed at once
 # by a stop must not crash the app. Its summary is appended to the sound mode one.
+#
+# And integration_test/lock_screen_test.dart (see lock_screen_hook below): a screen lock
+# while a video plays must hand the stream over to sound, and the unlock must bring the
+# picture back. Informational for now.
 set -u
 
 OUT=${OUT:?OUT is required}
@@ -266,7 +270,195 @@ foreground_start_stop_hook() {
   [ "$failures" -eq 0 ]
 }
 
+# ---- lock_screen_test.dart: a screen lock while a video plays ----------------------------------
+# The test opens the player page on a clip served by scripts/ci/serve_fixtures.py (started
+# here, port LOCK_PORT) and logs E2E_VIDEO_PLAYING; this hook then does what a person does
+# with the power key and reads what Android holds for the app.
+#
+# After KEYCODE_SLEEP, within 15 s (and still the same 3 s later): the app's media session
+# is playing (state 3), the playback service is foreground, the app's audio players are
+# exactly one OpenSL ES player (mpv, the sound mode) and no AudioTrack (ExoPlayer, the
+# picture), and logcat holds no ForegroundServiceStartNotAllowedException, no "did not then
+# call startForeground" and no FATAL EXCEPTION. After KEYCODE_WAKEUP and `wm
+# dismiss-keyguard`, within 15 s: no active session of the app, the playback service gone
+# (onDestroy logged), exactly one AudioTrack and no OpenSL player, and the same app process
+# at the end.
+#
+# INFORMATIONAL for now (LOCK_GATING=0): a failed check is written to the summary and to the
+# hook's output and does not fail the run. It cannot go in the shim's informational-files,
+# because the shared runner starts the hook only for e2e-files. A crash of the app still
+# fails the job, since the runner scans the whole logcat for FATAL EXCEPTION.
+#
+# Promoting it to gating needs two green runs and a local video source; the clip is local.
+LOCK_GATING=0
+LOCK_PORT=8098
+LOCK_PROBLEMS=0
+LOCK_PROBLEM_LOG=""
+lock_problem() {
+  LOCK_PROBLEMS=$((LOCK_PROBLEMS + 1))
+  LOCK_PROBLEM_LOG="${LOCK_PROBLEM_LOG}- $*"$'\n'
+  echo "LOCK CHECK FAILED: $*"
+}
+
+# lock_snapshot LABEL: capture_state plus the two things only this test asks about. Sets
+# L_FG (the playback service is a foreground service) and L_OPENSL / L_TRACK (the app's
+# OpenSL ES players and AudioTracks in dumpsys audio, whatever their state).
+lock_snapshot() {
+  local f="$OUT/hook_state_$1"
+  capture_state "$1"
+  L_FG=$(grep -c 'isForeground=true' "$f.services.txt")
+  adb_ shell dumpsys audio 2>&1 | tr -d '\r' | grep -E "u/pid:$APP_UID/" | sed 's/^ *//' > "$f.players.txt" || true
+  L_OPENSL=$(grep -c 'type:OpenSL ES' "$f.players.txt")
+  L_TRACK=$(grep -c 'type:android.media.AudioTrack' "$f.players.txt")
+  STATE_LOG="${STATE_LOG%$'\n'}; foreground=$L_FG OpenSL players=$L_OPENSL AudioTracks=$L_TRACK"$'\n'
+}
+lock_snapshot_line() {
+  echo "sessions=$S_SESSIONS active=$S_ACTIVE playing=$S_PLAYING states=[${S_STATES% }] playback services=$S_RECORDS foreground=$L_FG OpenSL players=$L_OPENSL AudioTracks=$L_TRACK notifications=$S_NOTIF"
+}
+lock_sound_ok() { [ "$S_PLAYING" -eq 1 ] && [ "$L_FG" -ge 1 ] && [ "$L_OPENSL" -eq 1 ] && [ "$L_TRACK" -eq 0 ]; }
+lock_video_ok() { [ "$S_ACTIVE" -eq 0 ] && [ "$S_RECORDS" -eq 0 ] && [ "$L_OPENSL" -eq 0 ] && [ "$L_TRACK" -eq 1 ]; }
+
+# lock_poll LABEL CHECK SECONDS: snapshots every second until CHECK holds or SECONDS pass.
+# Sets POLL_OK (1/0) and POLL_AT (seconds until it held). The polls are left out of the
+# state log; the caller takes the snapshot that is reported.
+lock_poll() {
+  local label=$1 check=$2 limit=$3 start=$SECONDS keep
+  POLL_OK=0
+  POLL_AT=""
+  while :; do
+    keep=$STATE_LOG
+    lock_snapshot "$label"
+    STATE_LOG=$keep
+    if "$check"; then POLL_OK=1; POLL_AT=$((SECONDS - start)); break; fi
+    [ $((SECONDS - start)) -ge "$limit" ] && break
+    sleep 1
+  done
+}
+
+lock_screen_hook() {
+  local pid_before pid_after offset slice="$OUT/hook_lock_logcat.txt" fatal destroys
+  SLEEP_AT=""
+  WAKE_AT=""
+  LOCK_PID_LINE=""
+  LOCK_FATAL=""
+  python3 scripts/ci/serve_fixtures.py integration_test/fixtures "$LOCK_PORT" "$OUT/fixture_server.log" > "$OUT/fixture_server.out" 2>&1 &
+  FIX_PID=$!
+  trap 'kill "$FIX_PID" 2>/dev/null || true' EXIT
+  echo "hook: fixture server pid=$FIX_PID on 127.0.0.1:$LOCK_PORT; waiting up to ${WAIT_FOR_MARKER}s for E2E_VIDEO_PLAYING in $TESTOUT"
+
+  if ! wait_for E2E_VIDEO_PLAYING "$WAIT_FOR_MARKER"; then
+    if grep -q E2E_VIDEO_FAILED "$TESTOUT" 2>/dev/null; then
+      lock_problem "the clip never played in the app ($(grep -m1 E2E_VIDEO_FAILED "$TESTOUT")), so nothing was checked"
+    else
+      lock_problem "marker E2E_VIDEO_PLAYING never appeared in $TESTOUT (the test never started), so nothing was checked"
+    fi
+    lock_summary
+    return 0
+  fi
+  echo "hook: video playing"
+  sleep 2
+  APP_UID=$(adb_ shell pm list packages -U "$PKG" 2>/dev/null | tr -d '\r' | grep -m1 "package:$PKG " | sed 's/.*uid://')
+  [ -n "$APP_UID" ] || lock_problem "could not read the app's uid, so its audio players cannot be counted"
+
+  lock_snapshot "video playing, before the lock"
+  if ! { [ "$S_ACTIVE" -eq 0 ] && [ "$S_RECORDS" -eq 0 ] && [ "$L_OPENSL" -eq 0 ] && [ "$L_TRACK" -eq 1 ]; }; then
+    lock_problem "before the lock the picture was not what a lock test starts from (want no session, no service, 1 AudioTrack, 0 OpenSL): $(lock_snapshot_line)"
+  fi
+
+  adb_ logcat -b crash -c > /dev/null 2>&1 || true
+  offset=$(wc -l < "$LOGCAT" 2>/dev/null || echo 0)
+  pid_before=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
+  [ -n "$pid_before" ] || lock_problem "the app process was not running when the lock began"
+
+  # ---- SLEEP ----
+  echo "hook: KEYCODE_SLEEP"
+  adb_ shell input keyevent KEYCODE_SLEEP
+  lock_poll "after sleep, polling" lock_sound_ok 15
+  SLEEP_AT=$POLL_AT
+  if [ "$POLL_OK" -eq 1 ]; then
+    # It must still hold a moment later: a handover that is only passing through does not count.
+    sleep 3
+    lock_snapshot "after sleep"
+    lock_sound_ok || lock_problem "after sleep the sound state did not hold: it was right after ${SLEEP_AT}s and wrong 3 s later: $(lock_snapshot_line)"
+  else
+    lock_snapshot "after sleep"
+    lock_problem "within 15 s of sleep the app was not playing as sound (want session playing, foreground service, 1 OpenSL, 0 AudioTrack): $(lock_snapshot_line)"
+  fi
+  adb_ shell dumpsys power 2>&1 | tr -d '\r' | grep -m1 'mWakefulness=' > "$OUT/hook_lock_wakefulness_asleep.txt" || true
+
+  # ---- WAKEUP ----
+  echo "hook: KEYCODE_WAKEUP + dismiss-keyguard"
+  adb_ shell input keyevent KEYCODE_WAKEUP
+  adb_ shell wm dismiss-keyguard > /dev/null 2>&1 || true
+  lock_poll "after wake, polling" lock_video_ok 15
+  WAKE_AT=$POLL_AT
+  if [ "$POLL_OK" -eq 1 ]; then
+    sleep 3
+    lock_snapshot "after wake"
+    lock_video_ok || lock_problem "after wake the video state did not hold: it was right after ${WAKE_AT}s and wrong 3 s later: $(lock_snapshot_line)"
+  else
+    lock_snapshot "after wake"
+    lock_problem "within 15 s of wake the app was not back on video (want no active session, no service, 0 OpenSL, 1 AudioTrack): $(lock_snapshot_line)"
+  fi
+  adb_ shell dumpsys power 2>&1 | tr -d '\r' | grep -m1 'mWakefulness=' > "$OUT/hook_lock_wakefulness_awake.txt" || true
+
+  # ---- logcat over the whole lock, and the same process ----
+  wait_for E2E_LOCK_DONE 90 || true
+  sleep 3
+  pid_after=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
+  adb_ logcat -b crash -d 2>&1 | tr -d '\r' > "$OUT/hook_lock_crash_buffer.txt" || true
+  tail -n +"$((offset + 1))" "$LOGCAT" 2>/dev/null | tr -d '\r' > "$slice" || true
+  fatal=$(grep -hE "FATAL EXCEPTION|ForegroundServiceStartNotAllowedException|ForegroundServiceDidNotStartInTimeException|did not then call Service.startForeground|Bringing down service while still waiting for start foreground" \
+    "$slice" "$OUT/hook_lock_crash_buffer.txt" | sort -u | head -8)
+  [ -z "$fatal" ] || lock_problem "logcat holds crash or foreground-start lines: $(printf '%s' "$fatal" | head -3 | tr '\n' '|')"
+  destroys=$(grep -c 'TvNinjaService: onDestroy called' "$slice")
+  [ "$destroys" -ge 1 ] || lock_problem "the playback service never logged onDestroy after the lock began"
+  if [ -n "$pid_before" ] && [ "$pid_after" != "$pid_before" ]; then
+    lock_problem "the app process changed or died (pid ${pid_before} -> ${pid_after:-none})"
+  fi
+  LOCK_PID_LINE="app pid before=${pid_before:-none} after=${pid_after:-none}; service onDestroy lines since the lock=$destroys"
+  LOCK_FATAL=$fatal
+  lock_summary
+  return 0
+}
+
+# lock_summary: the section of the step summary, and LOCK_EXIT, the hook's exit status.
+lock_summary() {
+  local mode=informational
+  [ "$LOCK_GATING" -eq 1 ] && mode=gating
+  {
+    echo "### Lock screen hook ($mode)"
+    echo
+    if [ "$LOCK_PROBLEMS" -eq 0 ]; then echo "Result: **all checks passed**"; else echo "Result: **$LOCK_PROBLEMS check(s) failed**"; fi
+    echo
+    if [ -n "$LOCK_PROBLEM_LOG" ]; then printf '%s\n' "$LOCK_PROBLEM_LOG"; fi
+    echo '```'
+    echo "sound within: ${SLEEP_AT:-n/a}s of sleep (limit 15); video back within: ${WAKE_AT:-n/a}s of wake (limit 15)"
+    echo "${LOCK_PID_LINE:-(no process line: the lock was not reached)}"
+    printf '%s' "$STATE_LOG"
+    echo "wakefulness while locked: $(cat "$OUT/hook_lock_wakefulness_asleep.txt" 2>/dev/null)"
+    echo "wakefulness after wake:   $(cat "$OUT/hook_lock_wakefulness_awake.txt" 2>/dev/null)"
+    echo "the app's own view (test output):"
+    grep -E 'E2E_LIFECYCLE|E2E_VIDEO_AFTER_UNLOCK|E2E_VIDEO_FAILED' "$TESTOUT" 2>/dev/null || echo "(none)"
+    echo "the app's players, while locked:"
+    cat "$OUT/hook_state_after sleep.players.txt" 2>/dev/null || echo "(none)"
+    if [ -n "$LOCK_FATAL" ]; then echo "crash / foreground-start lines:"; echo "$LOCK_FATAL"; fi
+    echo "clip requests served: $(grep -c 'GET /lock_clip.mp4' "$OUT/fixture_server.log" 2>/dev/null)"
+    echo '```'
+    echo
+    echo "Evidence: e2e-out/hook_state_*, hook_lock_*, fixture_server.log"
+  } >> "$EXTRA"
+  echo "hook: done, lock check problems=$LOCK_PROBLEMS ($mode)"
+  if [ "$LOCK_GATING" -eq 1 ] && [ "$LOCK_PROBLEMS" -gt 0 ]; then failures=$((failures + LOCK_PROBLEMS)); fi
+  if [ "$failures" -eq 0 ]; then LOCK_EXIT=0; else LOCK_EXIT=1; fi
+}
+
 case "${1:-sound_mode_test.dart}" in
+  lock_screen_test.dart)
+    LOCK_EXIT=0
+    lock_screen_hook
+    exit "$LOCK_EXIT"
+    ;;
   foreground_start_stop_test.dart)
     foreground_start_stop_hook
     exit $?
