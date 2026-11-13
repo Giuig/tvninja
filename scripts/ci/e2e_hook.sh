@@ -137,7 +137,7 @@ recon_problem() {
 }
 
 reconnect_audio_mode_hook() {
-  local initlog="$OUT/hook_exo_init.txt" cap_pid="" stop_ms stop_s late total uid players
+  local initlog="$OUT/hook_exo_init.txt" cap_pid="" stop_ms stop_s late total uid players app_pid=""
   echo "hook: reconnect check, waiting for E2E_RECON_STOPPED"
   # Every ExoPlayer construction of this run, with an epoch timestamp.
   adb_ wait-for-device > /dev/null 2>&1 || true
@@ -151,6 +151,7 @@ reconnect_audio_mode_hook() {
     stop_ms=$(grep -m1 -o 'E2E_RECON_STOPPED attempt=[0-9]* ms=[0-9]*' "$TESTOUT" | sed 's/.*ms=//')
     stop_s=$((stop_ms / 1000))
     echo "hook: stop at epoch ms $stop_ms"
+    app_pid=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
     if wait_for E2E_RECON_SOUND_PLAYING 120; then
       # Let the chain's would-be attempts (+4 s, +12 s after the stop) fall inside the window.
       wait_for E2E_RECON_HOLD_DONE 60 || recon_problem "marker E2E_RECON_HOLD_DONE never appeared (the test did not get through its hold)"
@@ -174,13 +175,23 @@ reconnect_audio_mode_hook() {
   fi
 
   [ -n "$cap_pid" ] && kill "$cap_pid" 2> /dev/null
-  total=$(grep -c 'ExoPlayerImpl.*Init' "$initlog")
+  # Only the app's own process counts: the system has ExoPlayers of its own (an old Media3
+  # in another pid shows up in the same capture).
+  total=0
+  late=0
+  if [ -n "$app_pid" ]; then
+    total=$(awk -v p="$app_pid" '/ExoPlayerImpl/ && /Init/ && $2 == p { n++ } END { print n + 0 }' "$initlog")
+  fi
   if [ -n "${stop_s:-}" ]; then
-    late=$(awk -v t="$stop_s" '/ExoPlayerImpl/ && /Init/ { if ($1 + 0 > t) n++ } END { print n + 0 }' "$initlog")
-    if [ "$total" -lt 2 ]; then
-      recon_problem "the logcat capture holds $total ExoPlayerImpl Init line(s) in the whole run (the chain alone makes at least 2), so the capture could not see engines and the check proves nothing"
-    elif [ "$late" -gt 0 ]; then
-      recon_problem "$late new video engine(s) (ExoPlayerImpl: Init) appeared after stop(), behind sound mode: the reconnect chain survived the stop ($(awk -v t="$stop_s" '/ExoPlayerImpl/ && /Init/ && $1 + 0 > t { printf "+%.1fs ", $1 - t }' "$initlog"))"
+    if [ -z "$app_pid" ]; then
+      recon_problem "the app process (pid) was not found after the stop, so its video engines could not be counted"
+    elif [ "$total" -lt 1 ]; then
+      recon_problem "the logcat capture holds no ExoPlayerImpl Init of the app (pid $app_pid) in the whole run (the first load alone makes one), so the capture could not see engines and the check proves nothing"
+    else
+      late=$(awk -v t="$stop_s" -v p="$app_pid" '/ExoPlayerImpl/ && /Init/ && $2 == p { if ($1 + 0 > t) n++ } END { print n + 0 }' "$initlog")
+      if [ "$late" -gt 0 ]; then
+        recon_problem "$late new video engine(s) (ExoPlayerImpl: Init) appeared after stop(), behind sound mode: the reconnect chain survived the stop ($(awk -v t="$stop_s" -v p="$app_pid" '/ExoPlayerImpl/ && /Init/ && $2 == p && $1 + 0 > t { printf "+%.1fs ", $1 - t }' "$initlog"))"
+      fi
     fi
   fi
 
@@ -190,7 +201,7 @@ reconnect_audio_mode_hook() {
     if [ "$RECON_PROBLEMS" -eq 0 ]; then echo "Gating: **pass**"; else echo "Gating: **FAIL** ($RECON_PROBLEMS)"; fi
     echo
     echo '```'
-    echo "ExoPlayerImpl Init lines in the run: ${total:-?}; after the stop: ${late:-?} (stop at epoch ms ${stop_ms:-none})"
+    echo "ExoPlayerImpl Init lines of the app (pid ${app_pid:-?}) in the run: ${total:-?}; after the stop: ${late:-?} (stop at epoch ms ${stop_ms:-none})"
     echo "state during the hold:"
     printf '%s' "${STATE_LOG:-(none)}"
     printf '%s' "$RECON_PROBLEM_LOG"
