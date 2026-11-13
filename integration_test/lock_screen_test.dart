@@ -122,7 +122,7 @@ void main() {
       if (lifecycle.resumedAfterPause) {
         // The page is on screen again, so it may be read. Informational: the hook
         // checks the audio players, this is the picture's own view.
-        debugPrint('E2E_VIDEO_AFTER_UNLOCK playing=${_controllerPlaying(tester)}');
+        debugPrint('E2E_VIDEO_AFTER_UNLOCK ${_describeController(tester)}');
       }
       debugPrint('E2E_LOCK_DONE');
       await Future<void>.delayed(const Duration(seconds: 10));
@@ -140,8 +140,14 @@ VideoPlayerController? _controller(WidgetTester tester) {
   return tester.widget<VideoPlayer>(finder.first).controller;
 }
 
-bool _controllerPlaying(WidgetTester tester) =>
-    _controller(tester)?.value.isPlaying ?? false;
+String _describeController(WidgetTester tester) {
+  final found = find.byType(VideoPlayer).evaluate().length;
+  final value = _controller(tester)?.value;
+  if (value == null) return 'VideoPlayer widgets=$found, no controller';
+  return 'VideoPlayer widgets=$found initialized=${value.isInitialized} '
+      'playing=${value.isPlaying} buffering=${value.isBuffering} '
+      'position=${value.position} error=${value.hasError}';
+}
 
 /// Pumps until the clip is playing and has moved past its first second, or 60 s pass.
 Future<bool> _videoIsPlaying(WidgetTester tester) async {

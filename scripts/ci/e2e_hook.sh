@@ -471,6 +471,8 @@ lock_summary() {
     grep -E 'E2E_LIFECYCLE|E2E_VIDEO_AFTER_UNLOCK|E2E_VIDEO_FAILED' "$TESTOUT" 2>/dev/null || echo "(none)"
     echo "the app's players, while locked:"
     cat "$OUT/hook_state_after sleep.players.txt" 2>/dev/null || echo "(none)"
+    echo "the app's players, after the wake:"
+    cat "$OUT/hook_state_after wake.players.txt" 2>/dev/null || echo "(none)"
     if [ -n "$LOCK_FATAL" ]; then echo "crash / foreground-start lines:"; echo "$LOCK_FATAL"; fi
     echo "permission dialog handling: $(cat "$OUT/hook_lock_permission_watch.txt" 2>/dev/null | tr '\n' '|')"
     echo "clip requests served: $(grep -c 'GET /lock_clip.mp4' "$OUT/fixture_server.log" 2>/dev/null)"
