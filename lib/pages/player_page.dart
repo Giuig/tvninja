@@ -975,6 +975,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     );
   }
 
+  /// Height of the placeholder column at its full size (120 dp logo, 24 dp
+  /// gaps), rounded up a little. Windows shorter than this get the compact
+  /// metrics in [_buildPlaceholder].
+  static const double _placeholderFullHeight = 340;
+
   /// Unified placeholder widget for both video loading and audio mode
   Widget _buildPlaceholder({
     required bool showControls,
@@ -998,83 +1003,114 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       ),
     );
 
-    return Container(
-      color: Colors.black,
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: logoSize,
-              height: logoSize,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.5),
-                    blurRadius: 20,
-                    spreadRadius: 5,
-                  ),
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: ChannelLogo(
-                  // Raw URL: ChannelLogo proxies on web itself now.
-                  url: _currentChannel.logo,
-                  fit: BoxFit.contain,
-                  fallbackBuilder: (_) => Container(
-                    color: Colors.white24,
-                    child: Icon(
-                      showControls ? Icons.headphones : Icons.live_tv,
-                      size: logoSize * 0.5,
-                      color: Colors.white54,
+    // A landscape phone leaves this column less height than the full layout
+    // needs, and a Column that does not fit lays out from the top and clips its
+    // last child -- here the play/pause control, with a few pixels left showing.
+    // Below `_placeholderFullHeight` the logo and the gaps shrink so everything
+    // fits at the normal text scale; the control slot keeps its size (it is the
+    // thing that has to stay tappable). The compact tier is chosen from the
+    // height alone and does not adapt to the text scale: with a large system
+    // font, or in a window too short even for the compact layout, the content
+    // is taller than the body and the scroll view takes over, so the control
+    // may start below the fold but can always be scrolled to and tapped.
+    //
+    // The scroll view's minimum height is the viewport, and the column is
+    // centred in it, so a tall window gets exactly the layout it had before.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxHeight < _placeholderFullHeight;
+        final logo = compact ? 56.0 : logoSize;
+        final gapAfterLogo = compact ? 12.0 : 24.0;
+        final gapAfterTitle = compact ? 4.0 : 8.0;
+        final gapAfterSubtitle = compact ? 2.0 : 4.0;
+        final gapBeforeControl = compact ? 8.0 : 24.0;
+
+        return Container(
+          color: Colors.black,
+          child: SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: logo,
+                      height: logo,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.5),
+                            blurRadius: 20,
+                            spreadRadius: 5,
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: ChannelLogo(
+                          // Raw URL: ChannelLogo proxies on web itself now.
+                          url: _currentChannel.logo,
+                          fit: BoxFit.contain,
+                          fallbackBuilder: (_) => Container(
+                            color: Colors.white24,
+                            child: Icon(
+                              showControls ? Icons.headphones : Icons.live_tv,
+                              size: logo * 0.5,
+                              color: Colors.white54,
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
+                    SizedBox(height: gapAfterLogo),
+                    // Title slot - always present, empty string if null
+                    Text(
+                      title ?? '',
+                      style: const TextStyle(color: Colors.white70, fontSize: 20),
+                    ),
+                    SizedBox(height: gapAfterTitle),
+                    // Subtitle slot - always present, empty string if null
+                    Text(
+                      subtitle ?? '',
+                      style: const TextStyle(color: Colors.white38),
+                    ),
+                    SizedBox(height: gapAfterSubtitle),
+                    // Hint slot - always present, empty string if null
+                    Text(
+                      hintText ?? '',
+                      style: const TextStyle(color: Colors.white24, fontSize: 12),
+                    ),
+                    SizedBox(height: gapBeforeControl),
+                    // Controls / spinner area. Same 80x80 slot for the spinner
+                    // and the button, so switching between them moves nothing,
+                    // and well above the 48 dp minimum touch target.
+                    SizedBox(
+                      width: 80,
+                      height: 80,
+                      child: showControls
+                          ? isBuffering
+                              ? spinner
+                              : IconButton(
+                                  icon: Icon(
+                                    isPlaying
+                                        ? Icons.pause_circle_filled
+                                        : Icons.play_circle_filled,
+                                    size: 64,
+                                    color: Colors.white54,
+                                  ),
+                                  onPressed: onPlayPause,
+                                )
+                          : spinner,
+                    ),
+                  ],
                 ),
               ),
             ),
-            const SizedBox(height: 24),
-            // Title slot - always present, empty string if null
-            Text(
-              title ?? '',
-              style: const TextStyle(color: Colors.white70, fontSize: 20),
-            ),
-            const SizedBox(height: 8),
-            // Subtitle slot - always present, empty string if null
-            Text(
-              subtitle ?? '',
-              style: const TextStyle(color: Colors.white38),
-            ),
-            const SizedBox(height: 4),
-            // Hint slot - always present, empty string if null
-            Text(
-              hintText ?? '',
-              style: const TextStyle(color: Colors.white24, fontSize: 12),
-            ),
-            const SizedBox(height: 24),
-            // Controls / spinner area
-            SizedBox(
-              width: 80,
-              height: 80,
-              child: showControls
-                  ? isBuffering
-                      ? spinner
-                      : IconButton(
-                          icon: Icon(
-                            isPlaying
-                                ? Icons.pause_circle_filled
-                                : Icons.play_circle_filled,
-                            size: 64,
-                            color: Colors.white54,
-                          ),
-                          onPressed: onPlayPause,
-                        )
-                  : spinner,
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
