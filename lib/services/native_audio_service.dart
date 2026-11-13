@@ -71,6 +71,25 @@ class NativeAudioService {
   /// awaiting the native side can tell its result is no longer wanted.
   static int _foregroundEpoch = 0;
 
+  static final _foregroundRefusedController =
+      StreamController<void>.broadcast();
+
+  /// Emits each time the system refuses a foreground start. That is reported
+  /// by the service after the start call has already returned, so it is how a
+  /// caller learns that a [startForegroundEarly] that returned `true` did not
+  /// last: the early-start state is already cleared when it fires, and the
+  /// caller must abort whatever it was doing on the strength of that `true`.
+  ///
+  /// A listener that attaches late misses the event: compare
+  /// [foregroundRefusalCount] taken before the start with its value now.
+  static Stream<void> get foregroundRefused =>
+      _foregroundRefusedController.stream;
+
+  /// How many refusals [foregroundRefused] has reported since the app started.
+  /// Safe to read at any time, unlike the stream.
+  static int get foregroundRefusalCount => _foregroundRefusalCount;
+  static int _foregroundRefusalCount = 0;
+
   /// Debug builds only: delays the early foreground start (milliseconds), to
   /// see how late it can be before the system objects.
   static const int _debugForegroundDelayMs =
@@ -160,6 +179,20 @@ class NativeAudioService {
     _audioPlayer = playerFactory();
     await applyLiveStreamMpvOptions(_audioPlayer);
 
+    _listenToNativeEvents();
+
+    await _setupPlayerListeners();
+  }
+
+  /// Starts listening to the native side's events (notification buttons, a
+  /// refused foreground start). Idempotent: [stop] leaves the subscription in
+  /// place, and listening again would only leak the old one.
+  ///
+  /// Also called by [startForegroundEarly], which runs before [initialize]:
+  /// the native side drops events while nobody listens, and a refusal of that
+  /// very start would otherwise be lost.
+  static void _listenToNativeEvents() {
+    if (_eventSubscription != null) return;
     _eventSubscription = _eventChannel.receiveBroadcastStream().listen(
       (dynamic event) {
         if (event is Map) {
@@ -170,8 +203,6 @@ class NativeAudioService {
         // Handle error
       },
     );
-
-    await _setupPlayerListeners();
   }
 
   static Future<void> _setupPlayerListeners() async {
@@ -462,16 +493,44 @@ class NativeAudioService {
         _controlController.add(PlaybackControl.pause);
         break;
       case 'stopRequested':
+        // Stop from the notification or a media key. When the service was
+        // started early it is over now (the notification's own Stop takes the
+        // service down itself; a media-session stop does not, so it is asked
+        // to stop here too, which is harmless when it is already gone). Left
+        // set, a later [play] would skip its own start and play with no
+        // service.
+        if (_foregroundStartedEarly) {
+          _clearEarlyForeground();
+          unawaited(_stopServiceQuietly());
+        }
         _controlController.add(PlaybackControl.stop);
         break;
       case 'foregroundRefused':
         // The system refused the foreground start and the service tore itself
         // down: there is no service and no notification to update.
         debugPrint('[Audio] The system refused the foreground service');
-        _foregroundStartedEarly = false;
-        _isBackgroundMode = false;
-        _foregroundEpoch++;
+        _clearEarlyForeground();
+        _foregroundRefusalCount++;
+        _foregroundRefusedController.add(null);
         break;
+    }
+  }
+
+  /// Forgets an early foreground start: nothing is running for it any more, or
+  /// it is being ended right now. Also tells a [startForegroundEarly] still
+  /// awaiting the native side that its result is no longer wanted.
+  static void _clearEarlyForeground() {
+    _foregroundStartedEarly = false;
+    _isBackgroundMode = false;
+    _foregroundEpoch++;
+  }
+
+  /// Asks the native side to stop the service, logging instead of throwing.
+  static Future<void> _stopServiceQuietly() async {
+    try {
+      await _channel.invokeMethod('stopBackground');
+    } catch (e) {
+      debugPrint('[Audio] Stopping the foreground service failed: $e');
     }
   }
 
@@ -508,6 +567,9 @@ class NativeAudioService {
   }) async {
     if (kIsWeb) return false;
 
+    // Before the native call: a refusal of this very start is reported as an
+    // event, and the native side drops events while nobody listens.
+    _listenToNativeEvents();
     final epoch = _foregroundEpoch;
     _foregroundStartedEarly = true;
     try {
@@ -694,22 +756,28 @@ class NativeAudioService {
     if (requestId != _playRequestId) return;
     _sessionWanted = false;
     _recovery.reset();
-    if (_foregroundStartedEarly) {
-      // The service was started for this session and there will be no audio to
-      // keep it for: end it, so no empty notification and no wake lock is left.
-      // Cleared before the await, so a newer start sees a clean slate.
-      _foregroundStartedEarly = false;
-      _isBackgroundMode = false;
-      _foregroundEpoch++;
+
+    // Everything is decided and both stops are issued before the first await,
+    // and nothing static is read after one. The stop of the service can take a
+    // while (the native side holds it back while a start is still pending), and
+    // a zap in that time starts a newer [play] that swaps [_audioPlayer]: a
+    // stop issued after the wait would stop the newer play's player.
+    final player = _audioPlayer;
+    // The service was started for this session and there will be no audio to
+    // keep it for: end it, so no empty notification and no wake lock is left.
+    final endEarlyService = _foregroundStartedEarly;
+    if (endEarlyService) _clearEarlyForeground();
+
+    Future<void> stopPlayer() async {
       try {
-        await _channel.invokeMethod('stopBackground');
-      } catch (e) {
-        debugPrint('[Audio] Stopping the early foreground service failed: $e');
-      }
+        await player.stop();
+      } catch (_) {}
     }
-    try {
-      await _audioPlayer.stop();
-    } catch (_) {}
+
+    await Future.wait([
+      if (endEarlyService) _stopServiceQuietly(),
+      stopPlayer(),
+    ]);
   }
 
   static Future<bool> pause() async {

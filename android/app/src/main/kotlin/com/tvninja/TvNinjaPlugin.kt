@@ -88,12 +88,24 @@ class TvNinjaPlugin private constructor(
         // the start as pending and waits for it (see [requestStop]).
         pendingStarts++
         if (pendingStarts == 1) pendingSince = SystemClock.elapsedRealtime()
+        // A stop that was waiting on an earlier start is cancelled by this newer
+        // start (the user wants playback again), but only if this start happens.
+        val deferredStop = stopAfterStart
         stopAfterStart = false
         try {
             context.startForegroundService(intent)
         } catch (e: RuntimeException) {
-            // Nothing was started, so nothing will report back.
+            // Nothing was started, so nothing will report back, and the stop that
+            // was waiting must still happen.
             pendingStarts--
+            stopAfterStart = deferredStop
+            if (pendingStarts == 0 && stopAfterStart) {
+                // Not reachable while the earlier start is still counted (a
+                // deferred stop implies one is pending), but if the counter was
+                // ever reset nobody else would honour it.
+                stopAfterStart = false
+                context.stopService(Intent(context, TvNinjaBackgroundService::class.java))
+            }
             throw e
         }
     }
