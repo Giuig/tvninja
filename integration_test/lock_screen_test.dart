@@ -94,6 +94,18 @@ void main() {
       }
       // Let the native side catch up with the state change before the marker.
       await Future<void>.delayed(const Duration(seconds: 2));
+      // A system dialog over the page (the app asks for the notification permission when
+      // it starts, and a reinstalled test app has lost the grant) leaves the app
+      // `inactive` instead of `resumed`. The hook dismisses it; the lock only starts once
+      // the app is in front again.
+      final inFront = DateTime.now().add(const Duration(seconds: 30));
+      while (WidgetsBinding.instance.lifecycleState !=
+              AppLifecycleState.resumed &&
+          DateTime.now().isBefore(inFront)) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      debugPrint(
+          'E2E_APP_STATE before the lock: ${WidgetsBinding.instance.lifecycleState}');
       debugPrint('E2E_VIDEO_PLAYING');
 
       // From here the hook acts. Nothing below touches the widget tree until the screen

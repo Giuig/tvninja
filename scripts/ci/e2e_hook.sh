@@ -335,6 +335,33 @@ lock_poll() {
   done
 }
 
+# lock_permission_watch: a reinstalled test app has lost its notification grant, and the app
+# asks for it when it starts, so a permission dialog can sit over the page. While it does,
+# the app is `inactive` and a wake would show the dialog again instead of the app. Once a
+# second: if the permission dialog has the focus, grant the permission (so it does not
+# return) and press back if the dialog is still there. Each action is written to
+# hook_lock_permission_watch.txt. Runs in the background; the hook's exit trap stops it.
+lock_permission_watch() {
+  local focus
+  while :; do
+    focus=$(adb_ shell dumpsys window 2>/dev/null | tr -d '' | grep -m1 'mCurrentFocus')
+    case "$focus" in
+      *GrantPermissionsActivity*)
+        adb_ shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS > /dev/null 2>&1 || true
+        sleep 1
+        focus=$(adb_ shell dumpsys window 2>/dev/null | tr -d '' | grep -m1 'mCurrentFocus')
+        case "$focus" in
+          *GrantPermissionsActivity*)
+            adb_ shell input keyevent KEYCODE_BACK > /dev/null 2>&1 || true
+            echo "$(date +%T) permission dialog on top: granted POST_NOTIFICATIONS, still there, pressed back" >> "$OUT/hook_lock_permission_watch.txt" ;;
+          *)
+            echo "$(date +%T) permission dialog on top: granted POST_NOTIFICATIONS, it closed by itself" >> "$OUT/hook_lock_permission_watch.txt" ;;
+        esac ;;
+    esac
+    sleep 1
+  done
+}
+
 lock_screen_hook() {
   local pid_before pid_after offset slice="$OUT/hook_lock_logcat.txt" fatal destroys
   SLEEP_AT=""
@@ -343,7 +370,9 @@ lock_screen_hook() {
   LOCK_FATAL=""
   python3 scripts/ci/serve_fixtures.py integration_test/fixtures "$LOCK_PORT" "$OUT/fixture_server.log" > "$OUT/fixture_server.out" 2>&1 &
   FIX_PID=$!
-  trap 'kill "$FIX_PID" 2>/dev/null || true' EXIT
+  lock_permission_watch &
+  WATCH_PID=$!
+  trap 'kill "$FIX_PID" "$WATCH_PID" 2>/dev/null || true' EXIT
   echo "hook: fixture server pid=$FIX_PID on 127.0.0.1:$LOCK_PORT; waiting up to ${WAIT_FOR_MARKER}s for E2E_VIDEO_PLAYING in $TESTOUT"
 
   if ! wait_for E2E_VIDEO_PLAYING "$WAIT_FOR_MARKER"; then
@@ -443,6 +472,7 @@ lock_summary() {
     echo "the app's players, while locked:"
     cat "$OUT/hook_state_after sleep.players.txt" 2>/dev/null || echo "(none)"
     if [ -n "$LOCK_FATAL" ]; then echo "crash / foreground-start lines:"; echo "$LOCK_FATAL"; fi
+    echo "permission dialog handling: $(cat "$OUT/hook_lock_permission_watch.txt" 2>/dev/null | tr '\n' '|')"
     echo "clip requests served: $(grep -c 'GET /lock_clip.mp4' "$OUT/fixture_server.log" 2>/dev/null)"
     echo '```'
     echo
