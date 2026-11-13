@@ -1007,10 +1007,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // needs, and a Column that does not fit lays out from the top and clips its
     // last child -- here the play/pause control, with a few pixels left showing.
     // Below `_placeholderFullHeight` the logo and the gaps shrink so everything
-    // still fits; the control slot keeps its size (it is the thing that has to
-    // stay tappable). The scroll view is the guarantee for what the compact
-    // layout cannot absorb (a very short window, a large system font): the
-    // control may then be below the fold, but never out of reach.
+    // fits at the normal text scale; the control slot keeps its size (it is the
+    // thing that has to stay tappable). The compact tier is chosen from the
+    // height alone and does not adapt to the text scale: with a large system
+    // font, or in a window too short even for the compact layout, the content
+    // is taller than the body and the scroll view takes over, so the control
+    // may start below the fold but can always be scrolled to and tapped.
     //
     // The scroll view's minimum height is the viewport, and the column is
     // centred in it, so a tall window gets exactly the layout it had before.

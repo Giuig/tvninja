@@ -119,6 +119,32 @@ void main() {
       of: find.byIcon(Icons.play_circle_filled),
       matching: find.byType(IconButton));
 
+  /// How far the placeholder's scroll view can scroll. Zero means nothing
+  /// scrolls: either the layout fits or there is no scroll view at all.
+  double scrollExtent(WidgetTester tester) {
+    final scrollables =
+        find.ancestor(of: controlButton(), matching: find.byType(Scrollable));
+    if (scrollables.evaluate().isEmpty) return 0;
+    return tester
+        .state<ScrollableState>(scrollables.first)
+        .position
+        .maxScrollExtent;
+  }
+
+  /// Taps the control for real and returns what the page's play/pause handler
+  /// did. On the test host the audio engine does not exist, so the handler
+  /// (`resume`, as the screen starts stopped) fails on its uninitialised
+  /// player: that failure is the proof that the tap reached the handler, and
+  /// nothing else may fail.
+  Future<List<Object>> tapControl(WidgetTester tester) async {
+    final errors = <Object>[];
+    await runZonedGuarded(() async {
+      await tester.tap(controlButton());
+      await tester.pump();
+    }, (e, _) => errors.add(e));
+    return errors;
+  }
+
   void expectInside(WidgetTester tester, Finder what, Rect body, String name) {
     final rect = tester.getRect(what.first);
     expect(rect.top, greaterThanOrEqualTo(body.top - 0.01),
@@ -198,6 +224,51 @@ void main() {
       final body = bodyArea(tester);
       expectInside(tester, controlButton(), body, 'play/pause button');
       expect(tapReaches(tester, controlButton()), isTrue);
+    });
+  });
+
+  group('sound screen with a large system font', () {
+    // Display zoom and the largest font setting scale the text; the logo and
+    // the control slot do not shrink, so the column outgrows a landscape body.
+    // The compact layout does not adapt to the scale; the scroll view is what
+    // keeps the control reachable.
+    void useTextScale(WidgetTester tester, double scale) {
+      tester.platformDispatcher.textScaleFactorTestValue = scale;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    }
+
+    testWidgets('scrolls to the control in landscape, and a tap reaches it',
+        (tester) async {
+      useTextScale(tester, 2.0);
+      await openSoundScreen(tester, landscape);
+
+      expect(scrollExtent(tester), greaterThan(0),
+          reason: 'the content is taller than the body, so it must scroll; '
+              'otherwise the control is clipped and unreachable');
+
+      await tester.ensureVisible(controlButton());
+      await tester.pump();
+
+      expectInside(
+          tester, controlButton(), bodyArea(tester), 'play/pause button');
+      expect(tapReaches(tester, controlButton()), isTrue);
+
+      final errors = await tapControl(tester);
+      expect(errors, hasLength(1),
+          reason: 'the tap must reach the play/pause handler');
+      expect(errors.single.toString(), contains('_audioPlayer'));
+    });
+
+    testWidgets('a normal window at the normal font does not scroll',
+        (tester) async {
+      await openSoundScreen(tester, portrait);
+      expect(scrollExtent(tester), 0);
+
+      // Nor does the compact landscape layout: the scroll view is only a
+      // fallback, not part of the everyday layout.
+      await tester.pumpWidget(const SizedBox());
+      await openSoundScreen(tester, landscape);
+      expect(scrollExtent(tester), 0);
     });
   });
 
