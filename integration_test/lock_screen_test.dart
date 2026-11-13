@@ -118,11 +118,22 @@ void main() {
           'resumedAfterPause=${lifecycle.resumedAfterPause} '
           'states=${lifecycle.states.map((s) => s.name).join(',')}');
 
-      await Future<void>.delayed(_afterUnlock);
       if (lifecycle.resumedAfterPause) {
-        // The page is on screen again, so it may be read. Informational: the hook
-        // checks the audio players, this is the picture's own view.
-        debugPrint('E2E_VIDEO_AFTER_UNLOCK ${_describeController(tester)}');
+        // The screen is back, so frames run again and the page may be pumped and read.
+        // Pumping matters: without a frame the widget tree still shows what it showed
+        // before the lock, and the picture's own state would be read off a stale tree.
+        final until = DateTime.now().add(_afterUnlock);
+        var nextReport = DateTime.now().add(const Duration(seconds: 8));
+        while (DateTime.now().isBefore(until)) {
+          await tester.pump(const Duration(milliseconds: 500));
+          if (DateTime.now().isAfter(nextReport)) {
+            debugPrint('E2E_VIDEO_AFTER_UNLOCK ${_describeController(tester)}');
+            nextReport = nextReport.add(const Duration(seconds: 8));
+          }
+        }
+        debugPrint('E2E_VIDEO_AFTER_UNLOCK end: ${_describeController(tester)}');
+      } else {
+        await Future<void>.delayed(_afterUnlock);
       }
       debugPrint('E2E_LOCK_DONE');
       await Future<void>.delayed(const Duration(seconds: 10));
