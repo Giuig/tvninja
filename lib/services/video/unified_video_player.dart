@@ -64,7 +64,25 @@ class UnifiedVideoPlayer extends StatefulWidget {
   State<UnifiedVideoPlayer> createState() => UnifiedVideoPlayerState();
 }
 
+/// How [UnifiedVideoPlayerState] builds its engine: the four callbacks it
+/// wires into whichever engine it creates. See
+/// [UnifiedVideoPlayerState.engineFactory].
+typedef PlayerEngineFactory = PlayerEngine Function({
+  required void Function(bool playing) onPlaying,
+  required void Function(Duration position) onPosition,
+  required void Function(bool buffering) onBuffering,
+  required void Function(Object error) onEngineError,
+});
+
 class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
+  /// Test seam: when set, [_createEngine] returns what this builds instead of
+  /// an `ExoEngine` / `MpvEngine`, neither of which can run on the test host
+  /// (no ExoPlayer, no libmpv). Always null in the app; a test sets it and puts
+  /// it back to null when it finishes (the same shape as
+  /// `NativeAudioService.playerFactory`).
+  @visibleForTesting
+  static PlayerEngineFactory? engineFactory;
+
   /// The active playback engine: `ExoEngine` (Media3-backed `video_player`)
   /// on Android, `MpvEngine` (media_kit) everywhere else non-web. `kIsWeb`
   /// never reaches this field at all — see `build()`'s early return to
@@ -249,6 +267,9 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     _reconnect = ReconnectController(
       onRetry: _attemptReconnect,
       onGiveUp: _handleReconnectGiveUp,
+      // The rebuild is local and cheap (~0.45s) and the engine is already dead
+      // when a reconnect is scheduled, so a longer wait is only lost broadcast.
+      firstDelay: const Duration(milliseconds: 250),
     );
     _bufferingWatchdog = BufferingWatchdog(
       hasStartedPlaying: () => _hasStartedPlaying,
@@ -364,6 +385,15 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// no per-host exception list is needed. Routing is back to a flat
   /// platform decision with no URL inspection.
   PlayerEngine _createEngine() {
+    final factory = engineFactory;
+    if (factory != null) {
+      return factory(
+        onPlaying: _handleEnginePlaying,
+        onPosition: _handleEnginePosition,
+        onBuffering: _handleEngineBuffering,
+        onEngineError: _handleEngineError,
+      );
+    }
     if (!kIsWeb && Platform.isAndroid) {
       return ExoEngine(
         onPlaying: _handleEnginePlaying,
@@ -429,7 +459,20 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     debugPrint('[UnifiedVideoPlayer] engine-reported error: $error');
     if (!mounted) return;
     _isReconnecting = true;
-    _reconnect.schedule();
+    // `immediate`: an engine-reported error is fatal to the player — ExoPlayer
+    // goes IDLE and stays there until something calls `prepare()`, which
+    // `video_player` 2.11.1 never does (its Android plugin re-prepares only for
+    // BEHIND_LIVE_WINDOW, and the Dart API has no prepare at all). So there is
+    // nothing to ride out and nothing to wait for, and on a live stream every
+    // second of waiting is broadcast the viewer misses: the rebuilt stream
+    // resumes at the live edge. Measured on Rete 4 (a stale playlist raising a
+    // source error): ~2.4s lost per event with the old 2s first backoff.
+    //
+    // Only the *first* attempt skips the wait; later ones keep their backoff,
+    // so a source that stays dead is still retried 5 times and then gives up.
+    // The timer fires on the next event-loop turn, not synchronously, so this
+    // is safe to call from inside the engine's own notification.
+    _reconnect.schedule(immediate: true);
   }
 
   /// Bug 5 (found live-testing rapid channel zaps): a genuinely unresponsive
@@ -528,8 +571,18 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     _hasStartedPlaying = false;
     _isSwitching = true;
     try {
-      await _teardownPlayback();
-      await _initializePlayer(isReconnectAttempt: true);
+      final teardown = _teardownPlayback();
+      // Captured synchronously, right after teardown bumped it and before the
+      // await: if the player is disposed (or stopped for audio mode) while the
+      // old engine is still being torn down, this attempt is superseded and
+      // must not build a new engine over a page that has gone. The window is
+      // the engine's `dispose()`: near-zero for `ExoEngine` (backgrounded) but
+      // a real await for `MpvEngine`. `mounted` alone would not catch a stop.
+      final generation = _loadGeneration;
+      await teardown;
+      if (mounted && generation == _loadGeneration) {
+        await _initializePlayer(isReconnectAttempt: true);
+      }
     } catch (_) {
       // Swallow here too (in addition to the controller's own catch): this
       // is a reconnect attempt, not the initial load, so no widget.onError

@@ -4,9 +4,11 @@ import 'dart:math';
 /// Engine-agnostic exponential-backoff reconnect controller.
 ///
 /// Modeled on `native_audio_service.dart`'s `_scheduleReconnect()` (background
-/// audio's proven backoff): same schedule — `min(30, 2 * (1 << attempt))` →
-/// 2s / 4s / 8s / 16s / 30s — the same 5-attempt ceiling, and the same
-/// reset-on-success semantics.
+/// audio's proven backoff): the same 5-attempt ceiling, the same
+/// reset-on-success semantics, and the schedule `min(30, 2 * (1 << attempt))`
+/// → 2s / 4s / 8s / 16s / 30s — except that a caller may shorten the **first**
+/// step with [firstDelay] (foreground video does, to 0.25s; see there for why).
+/// Every later step is the same for every caller.
 ///
 /// Unlike the audio service (static/singleton — one process-wide background
 /// player), this is a plain instantiable class: foreground video needs one
@@ -31,6 +33,7 @@ class ReconnectController {
   ReconnectController({
     required this.onRetry,
     required this.onGiveUp,
+    this.firstDelay = const Duration(seconds: 2),
   });
 
   /// Invoked to actually attempt a reconnect (e.g. reopen the current URL, or
@@ -44,6 +47,29 @@ class ReconnectController {
   final void Function() onGiveUp;
 
   static const int _maxAttempts = 5;
+
+  /// How long the first attempt of a chain waits. Defaults to 2s, the first
+  /// step of `min(30, 2 * (1 << attempt))` and what every caller had before.
+  ///
+  /// Foreground video passes 0.25s (2026-11-13). On a live stream the wait is
+  /// not neutral: by the time a reconnect is scheduled the engine is already
+  /// dead (`ExoPlayer` goes IDLE on a source error and nothing in
+  /// `video_player` re-prepares it), so every second spent waiting is
+  /// broadcast the viewer never sees, and the re-prepared stream resumes at
+  /// the live edge. Measured on Rete 4 (release 1.7.0, BlueStacks): a stale
+  /// playlist raised a source error and the picture jumped forward ~2.4s, 2.0s
+  /// of it this delay. The later steps are unchanged — they are what protects a
+  /// genuinely dead source — and so is the 5-attempt ceiling.
+  ///
+  /// It stays a parameter rather than a new constant so a caller whose retry is
+  /// not a cheap local rebuild keeps the 2s it was tuned for.
+  final Duration firstDelay;
+
+  /// The wait before attempt number [attempt] (0-based): [firstDelay], then
+  /// 4s / 8s / 16s / 30s.
+  Duration delayFor(int attempt) => attempt == 0
+      ? firstDelay
+      : Duration(seconds: min(30, 2 * (1 << attempt)));
 
   int _attempt = 0;
   Timer? _timer;
@@ -61,24 +87,33 @@ class ReconnectController {
   /// Number of reconnect attempts fired since the last [reset]/[cancel].
   int get attempt => _attempt;
 
-  /// Schedules the next reconnect attempt with exponential backoff (2, 4, 8,
-  /// 16, 30 seconds). Safe to call repeatedly/redundantly — e.g. from more
+  /// Schedules the next reconnect attempt with exponential backoff
+  /// ([firstDelay], then 4, 8, 16, 30 seconds). Safe to call repeatedly/redundantly — e.g. from more
   /// than one external trigger (a watchdog timer, a failed open()) — since it
   /// simply (re)arms the pending timer at the current attempt's delay rather
   /// than double-counting attempts.
   ///
   /// If 5 attempts have already been made, calls [onGiveUp] immediately
   /// instead of scheduling another one.
-  void schedule() {
+  ///
+  /// [immediate] skips even [firstDelay] — but only for the first attempt of a
+  /// chain. It is for a caller that knows the engine is already dead and that
+  /// waiting buys nothing (an engine-reported fatal error); the timer still
+  /// fires on the next event-loop turn rather than synchronously, so the
+  /// caller can be inside the engine's own notification when it asks. Every
+  /// later attempt keeps its normal backoff, so a source that stays dead is
+  /// not hammered.
+  void schedule({bool immediate = false}) {
     _timer?.cancel();
     if (_attempt >= _maxAttempts) {
       _attempt = 0;
       onGiveUp();
       return;
     }
-    final delaySeconds = min(30, 2 * (1 << _attempt)); // 2,4,8,16,30
+    final delay =
+        immediate && _attempt == 0 ? Duration.zero : delayFor(_attempt);
     final generation = _generation;
-    _timer = Timer(Duration(seconds: delaySeconds), () => _fire(generation));
+    _timer = Timer(delay, () => _fire(generation));
   }
 
   Future<void> _fire(int generation) async {
@@ -106,7 +141,7 @@ class ReconnectController {
   /// Cancels any pending attempt and zeroes the attempt counter. Call this on
   /// success (first frame received after a reconnect) or on a fresh
   /// user-initiated action (e.g. a channel switch) so the next failure starts
-  /// the backoff over again from 2s. Also invalidates any attempt currently
+  /// the backoff over again from [firstDelay]. Also invalidates any attempt currently
   /// in flight (see [_generation]) so it won't reschedule itself once its
   /// `onRetry` await completes.
   void reset() {
