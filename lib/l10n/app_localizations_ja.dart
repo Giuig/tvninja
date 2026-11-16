@@ -178,6 +178,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get audioOnlyMode => '音声のみモード';
 
   @override
+  String get audioOnlyChannel => '音声のみのチャンネル';
+
+  @override
   String get unknownError => '不明なエラー';
 
   @override

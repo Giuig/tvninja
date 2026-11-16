@@ -199,6 +199,9 @@ class AppLocalizationsFr extends AppLocalizations {
   String get audioOnlyMode => 'Mode audio uniquement';
 
   @override
+  String get audioOnlyChannel => 'Chaîne audio uniquement';
+
+  @override
   String get unknownError => 'Erreur inconnue';
 
   @override

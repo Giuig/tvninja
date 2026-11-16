@@ -424,6 +424,12 @@ abstract class AppLocalizations {
   /// **'Audio Only Mode'**
   String get audioOnlyMode;
 
+  /// Placeholder subtitle for a channel the app locked into audio mode on its own evidence, with no video to switch to
+  ///
+  /// In en, this message translates to:
+  /// **'Audio-only channel'**
+  String get audioOnlyChannel;
+
   /// No description provided for @unknownError.
   ///
   /// In en, this message translates to:
