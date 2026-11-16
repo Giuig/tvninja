@@ -54,6 +54,7 @@
   "noChannelsFound": "チャンネルが見つかりません",
   "switchToVideo": "動画に切り替え",
   "audioOnlyMode": "音声のみモード",
+  "audioOnlyChannel": "音声のみのチャンネル",
   "unknownError": "不明なエラー",
   "nativeBackgroundAudio": "バックグラウンド再生",
   "notificationControlsHint": "通知コントロールで再生/一時停止",

@@ -54,6 +54,7 @@
   "noChannelsFound": "No se encontraron canales",
   "switchToVideo": "Cambiar a video",
   "audioOnlyMode": "Modo solo audio",
+  "audioOnlyChannel": "Canal solo de audio",
   "unknownError": "Error desconocido",
   "nativeBackgroundAudio": "Audio en segundo plano",
   "notificationControlsHint": "Usa los controles de notificación para reproducir/pausar",
