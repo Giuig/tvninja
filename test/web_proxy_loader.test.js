@@ -11,6 +11,18 @@ const src = fs.readFileSync(
   'utf8');
 const m = /BEGIN proxy-loader[^\n]*\n([\s\S]*?)\n\s*\/\/ END proxy-loader/.exec(src);
 assert.ok(m, 'proxy-loader markers not found in web_video_player_web.dart');
+// The block is lifted out of a non-raw Dart ''' string, so it is identical to what
+// the iframe runs ONLY while it contains no dollar sign and no backslash: a $name
+// would interpolate a Dart local, and an escape would become a different character,
+// and this test would silently stop testing the shipped text. Fail loudly instead.
+// (Written with char codes so this guard cannot itself be broken by escaping.)
+const DOLLAR = String.fromCharCode(36), BACKSLASH = String.fromCharCode(92);
+assert.ok(
+  m[1].indexOf(DOLLAR) === -1 && m[1].indexOf(BACKSLASH) === -1,
+  'proxy-loader block contains a dollar sign or backslash: Dart would alter it, '
+  + 'so node is no longer testing the text that ships'
+);
+
 const block = m[1];
 
 const PREFIX = 'https://api.allorigins.win/raw?url=';
