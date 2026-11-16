@@ -14,7 +14,6 @@ bool? _cachedIsEmulator;
 ///   at TS segment boundaries — the root cause of "audio repeating chunks")
 /// - cache-pause disabled (live cache is always "low"; pausing causes
 ///   micro-stutters when the audio pipeline resets on resume)
-/// - Auto-reconnect on network drops
 /// - Emulator-aware: disables hardware decode on emulators to prevent freeze
 Future<void> applyLiveStreamMpvOptions(Player player) async {
   if (kIsWeb) return;
@@ -41,17 +40,10 @@ Future<void> applyLiveStreamMpvOptions(Player player) async {
     // vs TV8 gap is real but isn't explained by bitrate/resolution.
     // Reduced network timeout for faster initial connection failure
     native.setProperty('network-timeout', '5');
-    native.setProperty('reconnect-streamed', 'yes');
-    native.setProperty('reconnect-delay-max', '2');
-    // Low retry count so mpv surfaces errors to Dart quickly rather than
-    // retrying silently for a long time inside libmpv itself. This is mpv's
-    // own internal retry only, and it deliberately stays low because real
-    // backoff lives above it: `video/reconnect_controller.dart` drives the
-    // foreground player's 5-attempt 2/4/8/16/30s chain, and
-    // `native_audio_service.dart`'s `_scheduleReconnect()` does the same for
-    // background audio. Raising this value stacks on top of those rather
-    // than replacing them, delaying how long a dead stream takes to surface.
-    native.setProperty('reconnect-max-retries', '2');
+    // No `reconnect-*` options here: those are libavformat's http options, not
+    // mpv properties, so setting them did nothing. Recovery from a dropped
+    // stream lives above mpv: `video/reconnect_controller.dart` for the
+    // foreground player, `audio_recovery.dart` for background audio.
     // Limit lavf probing — fallback for streams whose format can't be guessed
     // from the URL. applyFormatHint() sets demuxer-lavf-format before open()
     // to skip probing entirely for known formats (.m3u8 → hls, .ts → mpegts).
