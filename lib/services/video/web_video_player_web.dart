@@ -259,17 +259,35 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
     // real host. (Not to the original http:// URL: that would be blocked as
     // mixed content on the https site, which is the bug this fixes.)
     // xhrSetup cannot do this: hls.js calls it after xhr.open().
+    // BEGIN proxy-loader (run by test/web_proxy_loader_test.js; keep this block free of dollar signs and backslashes, it lives inside a Dart string)
+    // Nothing in here may throw: an exception inside load() stalls hls.js with
+    // no error at all, and one at script level would kill the whole player,
+    // including the sources that never touch the proxy. Anything that cannot be
+    // worked out is passed through unchanged, which fails exactly the way an
+    // unproxied request does on main.
     var PROXY_PREFIX = 'https://api.allorigins.win/raw?url=';
     var PROXY_ORIGIN = 'https://api.allorigins.win/';
-    var manifestBase = new URL('./', originalStreamUrl).href;
+    // '' means "unknown": relative URIs are then left alone.
+    var manifestBase = '';
     var levelBases = {};
+
+    // Directory of a URL, or '' when it is not a valid absolute URL.
+    function dirOf(u) {
+      try { return new URL('./', u).href; } catch (e) { return ''; }
+    }
+
+    // rel resolved against base, or null when that is not possible.
+    function resolveUrl(rel, base) {
+      if (!base) return null;
+      try { return new URL(rel, base).href; } catch (e) { return null; }
+    }
 
     function proxyWrap(u) {
       return PROXY_PREFIX + encodeURIComponent(u);
     }
 
     function unwrapProxy(u) {
-      return decodeURIComponent(u.substring(PROXY_PREFIX.length));
+      try { return decodeURIComponent(u.substring(PROXY_PREFIX.length)); } catch (e) { return ''; }
     }
 
     // Directory a relative URI should be resolved against. Playlist requests
@@ -284,35 +302,46 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
 
     function rewriteForProxy(context) {
       var u = context.url;
-      // Already proxied (the playlist request itself).
-      if (u.indexOf(PROXY_PREFIX) === 0) return u;
-      // A relative URI hls.js resolved against the proxy origin: re-resolve
-      // it against the real playlist directory, then proxy it.
-      if (u.indexOf(PROXY_ORIGIN) === 0) {
-        return proxyWrap(new URL(u.substring(PROXY_ORIGIN.length), baseFor(context)).href);
+      try {
+        // Already proxied (the playlist request itself).
+        if (u.indexOf(PROXY_PREFIX) === 0) return u;
+        // A relative URI hls.js resolved against the proxy origin: re-resolve
+        // it against the real playlist directory, then proxy it.
+        if (u.indexOf(PROXY_ORIGIN) === 0) {
+          var abs = resolveUrl(u.substring(PROXY_ORIGIN.length), baseFor(context));
+          return abs === null ? u : proxyWrap(abs);
+        }
+        // Any other absolute URI (variant or segment named in full).
+        return proxyWrap(u);
+      } catch (e) {
+        return u;
       }
-      // Any other absolute URI (variant or segment named in full).
-      return proxyWrap(u);
     }
 
     function makeProxyLoader() {
-      manifestBase = new URL('./', originalStreamUrl).href;
+      manifestBase = dirOf(originalStreamUrl);
       levelBases = {};
       return class ProxyLoader extends Hls.DefaultConfig.loader {
         load(context, config, callbacks) {
-          var rewritten = rewriteForProxy(context);
-          if (rewritten.indexOf(PROXY_PREFIX) === 0) {
-            if (context.type === 'manifest') {
-              manifestBase = new URL('./', unwrapProxy(rewritten)).href;
-            } else if (context.type === 'level' && context.level !== undefined) {
-              levelBases[context.level] = new URL('./', unwrapProxy(rewritten)).href;
+          try {
+            var rewritten = rewriteForProxy(context);
+            if (rewritten.indexOf(PROXY_PREFIX) === 0) {
+              if (context.type === 'manifest') {
+                manifestBase = dirOf(unwrapProxy(rewritten));
+              } else if (context.type === 'level' && context.level !== undefined) {
+                var dir = dirOf(unwrapProxy(rewritten));
+                if (dir) levelBases[context.level] = dir;
+              }
             }
+            context.url = rewritten;
+          } catch (e) {
+            // leave context.url as it was
           }
-          context.url = rewritten;
           super.load(context, config, callbacks);
         }
       };
     }
+    // END proxy-loader
 
     function loadStream(url) {
       log('Loading: ' + url.substring(0, 50) + '...');
