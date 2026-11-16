@@ -1,14 +1,11 @@
 package io.github.giuig.tvninja
 
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.ServiceConnection
 import android.content.pm.ApplicationInfo
 import android.media.AudioManager
-import android.os.IBinder
 import android.util.Log
 import androidx.core.content.ContextCompat
 import io.flutter.plugin.common.BinaryMessenger
@@ -22,21 +19,7 @@ class TvNinjaPlugin private constructor(
 
     private var eventSink: EventChannel.EventSink? = null
     private var pipEventSink: EventChannel.EventSink? = null
-    private var backgroundService: TvNinjaBackgroundService? = null
-    private var isBound = false
     private var isInPipMode = false
-
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            // Service started, we don't need to bind for now
-            isBound = true
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            backgroundService = null
-            isBound = false
-        }
-    }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -76,12 +59,10 @@ class TvNinjaPlugin private constructor(
             putExtra(TvNinjaBackgroundService.EXTRA_TITLE, title)
             putExtra(TvNinjaBackgroundService.EXTRA_LOGO, logo)
         }
+        // Started only, never bound: the service's onBind returns null, and a
+        // binding that nobody unbinds keeps the service (and its media session)
+        // alive after it asks to stop.
         context.startForegroundService(intent)
-        
-        // Also bind to keep reference
-        if (!isBound) {
-            context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
-        }
     }
 
     private fun updatePlaybackState(isPlaying: Boolean, isBuffering: Boolean, title: String, logo: String?) {
@@ -96,19 +77,10 @@ class TvNinjaPlugin private constructor(
     }
 
     private fun stopBackgroundService() {
-        val intent = Intent(context, TvNinjaBackgroundService::class.java).apply {
-            action = TvNinjaBackgroundService.ACTION_STOP
-        }
-        context.startService(intent)
-        
-        if (isBound) {
-            try {
-                context.unbindService(serviceConnection)
-            } catch (e: Exception) {
-                // Ignore if not bound
-            }
-            isBound = false
-        }
+        // stopService rather than a stop command: it never creates a service
+        // just to stop it (from the background that would be refused), and the
+        // service's onDestroy releases the session, locks and notification.
+        context.stopService(Intent(context, TvNinjaBackgroundService::class.java))
     }
 
     companion object {

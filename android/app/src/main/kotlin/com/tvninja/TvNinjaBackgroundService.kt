@@ -13,6 +13,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
 import android.net.wifi.WifiManager
 import android.os.PowerManager
@@ -21,7 +22,6 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.media.session.MediaButtonReceiver
 import java.net.URL
 
 class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListener {
@@ -36,6 +36,10 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
     private var isPlaying: Boolean = false
     private var isBuffering: Boolean = false
     private var hadAudioFocus: Boolean = false
+    // True from ACTION_START until the session is stopped. Commands that reach a
+    // service in any other state (a late update after Stop, a sticky restart
+    // with no intent) must not bring a session back to life.
+    private var sessionRunning: Boolean = false
 
     companion object {
         const val TAG = "TvNinjaService"
@@ -44,6 +48,11 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
         const val ACTION_PLAY = "io.github.giuig.tvninja.ACTION_PLAY"
         const val ACTION_PAUSE = "io.github.giuig.tvninja.ACTION_PAUSE"
         const val ACTION_STOP = "io.github.giuig.tvninja.ACTION_STOP"
+        // Media-session custom action id for Stop. From Android 13 the system
+        // media controls draw their buttons from the session's playback state
+        // and never draw the standard ACTION_STOP, so Stop has to be offered as
+        // a custom action to be visible there.
+        const val CUSTOM_ACTION_STOP = "io.github.giuig.tvninja.CUSTOM_ACTION_STOP"
         const val ACTION_START = "io.github.giuig.tvninja.ACTION_START"
         const val ACTION_UPDATE_STATE = "io.github.giuig.tvninja.UPDATE_STATE"
         const val EXTRA_TITLE = "extra_title"
@@ -63,6 +72,11 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand: action=${intent?.action}")
+        if (intent?.action != ACTION_START && !sessionRunning) {
+            Log.d(TAG, "No session running, ignoring ${intent?.action}")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_PLAY -> {
                 Log.d(TAG, "ACTION_PLAY received")
@@ -179,7 +193,19 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
                     Log.d(TAG, "MediaSession onStop")
                     TvNinjaPlugin.onPlaybackEvent(mapOf("event" to "stopRequested"))
                 }
+
+                override fun onCustomAction(action: String?, extras: Bundle?) {
+                    Log.d(TAG, "MediaSession onCustomAction: $action")
+                    if (action == CUSTOM_ACTION_STOP) {
+                        TvNinjaPlugin.onPlaybackEvent(mapOf("event" to "stopRequested"))
+                    }
+                }
             })
+            // No media button receiver: while the session is active the system sends
+            // headset/Bluetooth keys straight to the callback above. A receiver would only be
+            // used once the session is gone (after Stop), and the app has none that can start
+            // playback, so a key press there must go nowhere instead of crashing the app.
+            setMediaButtonReceiver(null)
             isActive = true
         }
         Log.d(TAG, "MediaSession setup complete")
@@ -214,6 +240,13 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
                     PlaybackStateCompat.ACTION_PAUSE or
                     PlaybackStateCompat.ACTION_STOP
                 )
+                .addCustomAction(
+                    PlaybackStateCompat.CustomAction.Builder(
+                        CUSTOM_ACTION_STOP,
+                        getString(R.string.notification_action_stop),
+                        R.drawable.ic_notification_stop
+                    ).build()
+                )
                 .build()
         )
 
@@ -231,6 +264,7 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
 
     fun startBackground(title: String, logo: String?) {
         Log.d(TAG, "startBackground called: title=$title")
+        sessionRunning = true
         acquireWakeLock()
         currentTitle = title
         currentLogo = logo
@@ -241,12 +275,31 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
 
     fun stopBackground() {
         Log.d(TAG, "stopBackground called")
+        sessionRunning = false
         abandonAudioFocus()
         releaseWakeLock()
+        deactivateMediaSession()
         stopForeground(STOP_FOREGROUND_REMOVE)
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.cancel(NOTIFICATION_ID)
         stopSelf()
+    }
+
+    /**
+     * Marks the media session stopped and inactive, so it stops being offered
+     * to media controls and no longer receives media buttons, even in the
+     * moment before the service is destroyed. The playback state carries no
+     * custom Stop action: there is nothing left to stop.
+     */
+    private fun deactivateMediaSession() {
+        mediaSession?.let {
+            it.setPlaybackState(
+                PlaybackStateCompat.Builder()
+                    .setState(PlaybackStateCompat.STATE_STOPPED, 0, 0f)
+                    .build()
+            )
+            it.isActive = false
+        }
     }
 
     private fun acquireWakeLock() {
@@ -345,8 +398,8 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
         // alive, stop tears it down entirely. Matches auraninja's
         // play/pause + stop control set (wrapper_audio_handler.dart).
         val stopAction = NotificationCompat.Action(
-            android.R.drawable.ic_delete,
-            "Stop",
+            R.drawable.ic_notification_stop,
+            getString(R.string.notification_action_stop),
             createActionIntent(ACTION_STOP)
         )
 
@@ -396,7 +449,9 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
                     connection.connectTimeout = 5000
                     connection.readTimeout = 5000
                     val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
-                    if (bitmap != null) {
+                    // The download can outlast the session; a stopped one must not
+                    // get its notification back.
+                    if (bitmap != null && sessionRunning) {
                         val notification = buildNotification(title, this.isPlaying, this.isBuffering, bitmap)
                         val notificationManager = getSystemService(NotificationManager::class.java)
                         notificationManager.notify(NOTIFICATION_ID, notification)
@@ -429,7 +484,9 @@ class TvNinjaBackgroundService : Service(), AudioManager.OnAudioFocusChangeListe
         notificationManager.cancel(NOTIFICATION_ID)
         abandonAudioFocus()
         releaseWakeLock()
+        deactivateMediaSession()
         mediaSession?.release()
+        mediaSession = null
         super.onDestroy()
     }
 }

@@ -15,3 +15,6 @@ jobs:
     with:
       app-name: tvninja
       check-icons: true
+      # integration_test/ holds the emulator tests (android_e2e.yml); they are analyzed here
+      # with everything else, but only run on the emulator.
+      analyze-paths: 'lib test integration_test'

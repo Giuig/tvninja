@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Notification action icon for the background-audio Stop button, replacing
+  the system X (android.R.drawable.ic_delete) with a plain filled square,
+  the same shape the audio_service package's own stop action uses (its
+  audio_service_stop.png is a sharp-cornered square inset about 1.5dp on
+  each side of a 24dp canvas, measured directly from that PNG rather than
+  guessed), so this app's notification matches that one's. The system draws
+  a notification action icon as an alpha mask and supplies the colour, so
+  only the shape matters here.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M1.5,1.5h21v21h-21z" />
+</vector>

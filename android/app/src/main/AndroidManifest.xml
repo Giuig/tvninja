@@ -46,19 +46,21 @@
             android:name="flutterEmbedding"
             android:value="2" />
         <!-- Native TV Ninja Background Service -->
+        <!-- Only the app starts this service (its own PendingIntents work with
+             exported=false), so no other app can send it a command.
+             There is deliberately no androidx MediaButtonReceiver here and no MEDIA_BUTTON
+             intent filter on the service. Headset and Bluetooth buttons reach the playing
+             media session directly. The receiver throws IllegalStateException when no
+             service handles MEDIA_BUTTON, and MediaSessionCompat would register it as the
+             session's media button receiver, so a button press after Stop crashed the app.
+             A filter on the service would instead make that receiver call
+             startForegroundService, which fails when the service stops without
+             startForeground. -->
         <service
             android:name=".TvNinjaBackgroundService"
-            android:exported="true"
+            android:exported="false"
             android:foregroundServiceType="mediaPlayback"
             android:permission="android.permission.FOREGROUND_SERVICE">
         </service>
-        <!-- Media button receiver for Bluetooth/headphone controls -->
-        <receiver 
-            android:name="androidx.media.session.MediaButtonReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-            </intent-filter>
-        </receiver>
     </application>
 </manifest>
