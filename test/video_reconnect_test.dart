@@ -588,4 +588,121 @@ void main() {
       await unmount(tester);
     });
   });
+
+  // Added when `main`'s lock-screen handover (#53) was merged into this branch
+  // (2026-11-16). The handover calls `shutDownForBackground()` /
+  // `restartAfterShutDown()`; the fast first retry must never fire against a
+  // shut-down player, and the 2 s backoff must still apply to a load that has
+  // not started after the restart.
+  group('UnifiedVideoPlayer fast retry vs the background shutdown', () {
+    late _Rig rig;
+    late GlobalKey<UnifiedVideoPlayerState> key;
+    late List<String?> errors;
+
+    setUp(() {
+      rig = _Rig();
+      key = GlobalKey<UnifiedVideoPlayerState>();
+      errors = [];
+      UnifiedVideoPlayerState.engineFactory = rig.create;
+      // A failed load asks the diagnostic probe, a real HTTP GET: answered on
+      // the fake clock so a test cannot wait on the network.
+      HttpOverrides.global = _SlowDeadHttp();
+    });
+
+    tearDown(() {
+      UnifiedVideoPlayerState.engineFactory = null;
+      HttpOverrides.global = null;
+    });
+
+    Future<void> mount(WidgetTester tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: UnifiedVideoPlayer(
+            key: key, url: 'http://a/one', onError: errors.add),
+      ));
+      await tester.pump();
+    }
+
+    UnifiedVideoPlayerState state(WidgetTester tester) =>
+        tester.state<UnifiedVideoPlayerState>(find.byType(UnifiedVideoPlayer));
+
+    Future<void> unmount(WidgetTester tester) async {
+      for (final gate in [rig.disposeGate, rig.openGate]) {
+        if (gate != null && !gate.isCompleted) gate.complete();
+      }
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(minutes: 2));
+    }
+
+    testWidgets(
+        'a lock right after an engine error cancels the pending immediate '
+        'retry', (tester) async {
+      await mount(tester);
+      rig.last.firstFrame();
+      rig.last.fail(); // schedules the zero-delay retry, not yet fired
+
+      await state(tester).shutDownForBackground();
+      await tester.pump(const Duration(seconds: 10));
+
+      expect(rig.engines, hasLength(1),
+          reason: 'no video engine may be built behind the lock');
+      expect(state(tester).isShutDown, isTrue);
+      expect(errors, isEmpty);
+      await unmount(tester);
+    });
+
+    testWidgets('an engine error arriving after the shutdown schedules nothing',
+        (tester) async {
+      await mount(tester);
+      rig.last.firstFrame();
+      final old = rig.last;
+      await state(tester).shutDownForBackground();
+
+      old.fail(); // a late event from the engine that was just disposed
+      await tester.pump(const Duration(seconds: 10));
+
+      expect(rig.engines, hasLength(1));
+      expect(state(tester).isReconnecting, isFalse);
+      await unmount(tester);
+    });
+
+    testWidgets(
+        'a lock while the immediate retry is tearing down builds no engine',
+        (tester) async {
+      await mount(tester);
+      rig.last.firstFrame();
+      rig.disposeGate = Completer<void>();
+      rig.last.fail();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(rig.engines, hasLength(1), reason: 'parked in dispose()');
+
+      await state(tester).shutDownForBackground();
+      rig.disposeGate!.complete();
+      await tester.pump(const Duration(seconds: 10));
+
+      expect(rig.engines, hasLength(1),
+          reason: 'the attempt in flight at the lock must stand down');
+      await unmount(tester);
+    });
+
+    testWidgets(
+        'after the unlock a load that never starts is retried after 2 s, not '
+        'at once', (tester) async {
+      await mount(tester);
+      rig.last.firstFrame(); // it played before the lock
+      await state(tester).shutDownForBackground();
+      rig.failOpens = true; // the restarted stream is dead
+      // Not awaited: the failed first open waits on the probe, which only
+      // answers when the fake clock is pumped.
+      unawaited(state(tester).restartAfterShutDown());
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(rig.engines, hasLength(2), reason: 'the restart opened engine #2');
+
+      await tester.pump(const Duration(milliseconds: 1800));
+      expect(rig.engines, hasLength(2),
+          reason: 'a stream that has not started keeps the 2 s first step');
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(rig.engines, hasLength(3), reason: 'the 2 s retry fired');
+      await unmount(tester);
+    });
+  });
 }
