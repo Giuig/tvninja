@@ -7,7 +7,7 @@ import 'package:flutter/foundation.dart';
 /// Two different situations, split on whether a frame was ever seen.
 ///
 /// A stream that **was** playing and stalls is worth recovering: that is a
-/// live channel blipping, and the reconnect chain (2/4/8/16/30s, five
+/// live channel blipping, and the reconnect chain (first step short, then 4/8/16/30s, five
 /// attempts) exists for exactly that. [onStalled] starts it.
 ///
 /// A stream that has **never started** is not worth retrying five times.

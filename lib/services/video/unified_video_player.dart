@@ -201,6 +201,11 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
   /// service's reconnect step, in `NativeAudioService`: this class has none.)
   late final ReconnectController _reconnect;
 
+  /// First reconnect step after a stall of a stream that had been playing,
+  /// instead of the controller's 2s (see [ReconnectController.schedule] and
+  /// [_handleEngineError] for why it is for a playing stream only).
+  static const Duration _fastFirstStep = Duration(milliseconds: 250);
+
   /// Bumped by every action that starts a new load or tears the current one
   /// down. [_surfaceError] captures it before its network probe and re-checks
   /// it afterwards, so a probe belonging to a superseded load can't report.
@@ -313,7 +318,7 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       onStalled: () {
         if (!mounted || _shutDown) return;
         _isReconnecting = true;
-        _reconnect.schedule();
+        _reconnect.schedule(firstDelay: _fastFirstStep);
       },
     );
     // Both sides start "busy" (see [_lastReportedBusy]), and on web nothing
@@ -509,7 +514,27 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     debugPrint('[UnifiedVideoPlayer] engine-reported error: $error');
     if (!mounted || _shutDown) return;
     _isReconnecting = true;
-    _reconnect.schedule();
+    // An engine-reported error is fatal to the player — ExoPlayer goes IDLE and
+    // stays there until something calls `prepare()`, which `video_player`
+    // 2.11.1 never does (its Android plugin re-prepares only for
+    // BEHIND_LIVE_WINDOW, and the Dart API has no prepare at all). So there is
+    // nothing to ride out, and on a live stream every second of waiting is
+    // broadcast the viewer misses: the rebuilt stream resumes at the live edge.
+    // Measured on Rete 4 (a stale playlist raising a source error): ~2.4s lost
+    // per event with the old 2s first backoff.
+    //
+    // **Only for a stream that had been playing.** A load that never started
+    // fires this too (a failed `open()` reports the error through the
+    // controller *and* throws), and its error screen waits on a diagnostic
+    // probe that a rebuild started earlier would invalidate — a 0 or 250ms
+    // first step made a dead channel spin forever. That case, like the restart
+    // after give-up, keeps the 2s. See [ReconnectController.schedule].
+    //
+    // Only the first attempt is shortened; later ones keep their backoff, so a
+    // source that stays dead is still retried 5 times and then gives up. The
+    // timer fires on the next event-loop turn, not synchronously, so this is
+    // safe to call from inside the engine's own notification.
+    _reconnect.schedule(firstDelay: _hasStartedPlaying ? Duration.zero : null);
   }
 
   /// Bug 5 (found live-testing rapid channel zaps): a genuinely unresponsive
@@ -616,13 +641,27 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
     _hasStartedPlaying = false;
     _isSwitching = true;
     try {
-      await _teardownPlayback();
+      final teardown = _teardownPlayback();
+      // Captured synchronously, right after teardown bumped it and before the
+      // await: if the player is disposed (`_cleanup`) or stopped for audio mode
+      // (`stop()`) while the old engine is still being torn down, both bump it,
+      // this attempt is superseded and must not build a new engine behind
+      // them. The window is the engine's `dispose()`: near-zero for
+      // `ExoEngine` (backgrounded) but a real await for `MpvEngine`. `mounted`
+      // would not catch a stop, and a dispose is already covered by the bump.
+      final generation = _loadGeneration;
+      await teardown;
       // Shut down (or shut down and restarted) while the old engine was going
       // away: building an engine here would put video back behind the lock, or
       // a second engine over the restart's. The finally below leaves
-      // `_isSwitching` alone in that case.
+      // `_isSwitching` alone in that case. This is the shutdown/restart half of
+      // the guard (the epoch); the generation check below is the dispose/stop
+      // half. `stop()` bumps only the generation and does not touch the epoch,
+      // so the epoch check alone would let an audio-mode stop through.
       if (!_mayContinue(epoch)) return;
-      await _initializePlayer(isReconnectAttempt: true);
+      if (generation == _loadGeneration) {
+        await _initializePlayer(isReconnectAttempt: true);
+      }
     } catch (_) {
       // Swallow here too (in addition to the controller's own catch): this
       // is a reconnect attempt, not the initial load, so no widget.onError
@@ -784,6 +823,18 @@ class UnifiedVideoPlayerState extends State<UnifiedVideoPlayer> {
       // when the user switches to audio-only while a channel is still
       // opening.
       _loadGeneration++;
+      // The generation bump only supersedes an attempt that is *in flight*.
+      // Every other way the player rebuilds is a timer that outlives it: the
+      // reconnect chain re-arms itself after each attempt (`_fire`'s own
+      // `schedule()`), and the buffering watchdog may still be timing a stall.
+      // Left running, either puts a second video engine up some seconds later
+      // behind the sound screen (found 2026-11-13 by pumping 10 s after an
+      // audio-mode stop; the chain re-armed at +4 s). Both just stop: the
+      // controller's `cancel()` never calls `onGiveUp`, so nothing is surfaced
+      // (no error screen over the audio).
+      _reconnect.cancel();
+      _bufferingWatchdog.cancel();
+      _isReconnecting = false;
       await _engine?.stop();
     }
   }
