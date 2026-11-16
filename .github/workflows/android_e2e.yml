@@ -15,6 +15,13 @@ name: Android E2E
 # `e2e` label, on release tags, and on the `trigger-build` dispatch that version-bump.yml
 # sends after it pushes a tag (a tag pushed with GITHUB_TOKEN starts no workflow by
 # itself). A run takes about 15 minutes.
+#
+# It ALSO runs on every push to `main`, which is the backstop: because a PR needs the
+# `e2e` label to be checked, an unlabelled PR - or a branch merged without `main` merged
+# into it first - could otherwise land on `main` with no emulator coverage until the next
+# release. Found 2026-11-16: the three PRs merged that day were only covered because each
+# had been rebased on `main` and labelled by hand. A failure here is after the fact, so it
+# does not block the merge; it tells you `main` is broken before a release does.
 on:
   workflow_dispatch:
     inputs:
@@ -26,6 +33,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   repository_dispatch:
