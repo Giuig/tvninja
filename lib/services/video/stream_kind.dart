@@ -122,7 +122,39 @@ class _Variant {
   final String? codecs;
   final bool hasResolution;
 
-  const _Variant({this.bandwidth, this.codecs, required this.hasResolution});
+  /// The variant's own playlist URI, exactly as the master wrote it —
+  /// relative or absolute, query string included — or `null` when the line
+  /// after its `EXT-X-STREAM-INF` tag never arrived. That is not only a
+  /// malformed-playlist case: [StreamKindProbe] reads a capped prefix of the
+  /// body and drops the trailing partial line, so the last variant of a long
+  /// master legitimately shows up without a URI.
+  final String? uri;
+
+  const _Variant({
+    this.bandwidth,
+    this.codecs,
+    required this.hasResolution,
+    this.uri,
+  });
+
+  _Variant withUri(String uri) => _Variant(
+        bandwidth: bandwidth,
+        codecs: codecs,
+        hasResolution: hasResolution,
+        uri: uri,
+      );
+}
+
+/// One `EXT-X-MEDIA:TYPE=AUDIO` rendition that carries its own playlist URI —
+/// audio published separately from the video variants, which is the
+/// zero-quality-cost case for sound mode. A rendition without a `URI`
+/// attribute only *references* audio muxed inside the variants and is not
+/// something that can be opened on its own.
+class _AudioRendition {
+  final String uri;
+  final bool isDefault;
+
+  const _AudioRendition({required this.uri, required this.isDefault});
 }
 
 /// Classifies HLS playlist text — either a master (one or more
@@ -143,6 +175,65 @@ StreamKindVerdict classifyHlsPlaylist(String playlistText) {
     return _classifyMaster(playlistText);
   }
   return _classifyMediaPlaylist(playlistText);
+}
+
+/// The cheapest single URI sound mode should open for this master playlist,
+/// **exactly as the playlist wrote it** (relative or absolute), or `null`
+/// when the playlist offers nothing worth pinning.
+///
+/// Implements the owner's 2026-11-17 ruling, "sound mode takes the smallest
+/// stream": handing mpv the *master* makes it stream the top variant's full
+/// video+audio while only audio is played (352 MB / 10 min measured, ~2.1
+/// GB/h) and makes FFmpeg's demuxer open a prefix of the first segment of
+/// every variant, per open and per reconnect.
+///
+/// Order of preference:
+///
+/// 1. A **separate audio rendition** (`EXT-X-MEDIA:TYPE=AUDIO` with a `URI`),
+///    preferring `DEFAULT=YES`. No quality cost at all — it is simply the
+///    audio without the video attached.
+/// 2. The **lowest-`BANDWIDTH` variant**, when at least two variants declare
+///    a comparable `BANDWIDTH`. This one *is* a quality trade: `BANDWIDTH`
+///    order is not audio order (Deejay TV runs 128/128/64/64 with a 256
+///    listed last) and no manifest states audio bitrate, so the lowest
+///    variant carries 64-68 kbps audio on roughly half the muxed channels.
+///    The owner accepted that explicitly; a "gentler" numeric cap was
+///    rejected as less predictable, not safer.
+/// 3. Otherwise `null` — a media playlist, a single-variant master, or a
+///    master with nothing comparable. Those keep opening the URL they open
+///    today, so this can never add a failure surface where it has nothing
+///    to offer.
+///
+/// Returning the URI unjoined is deliberate: the caller re-joins it against
+/// a **freshly resolved** master every time, because relinker and Pluto URLs
+/// carry tokens that go stale, and a joined absolute URL must never be
+/// cached.
+String? pickSoundModeUri(String playlistText) {
+  if (!playlistText.contains('#EXT-X-STREAM-INF:')) return null;
+
+  final renditions = _parseAudioRenditions(playlistText);
+  if (renditions.isNotEmpty) {
+    final preferred = renditions.firstWhere(
+      (rendition) => rendition.isDefault,
+      orElse: () => renditions.first,
+    );
+    return preferred.uri;
+  }
+
+  final comparable = [
+    for (final variant in _parseStreamInfVariants(playlistText))
+      if (variant.bandwidth != null &&
+          variant.uri != null &&
+          variant.uri!.isNotEmpty)
+        variant,
+  ];
+  if (comparable.length < 2) return null;
+
+  var lowest = comparable.first;
+  for (final variant in comparable.skip(1)) {
+    if (variant.bandwidth! < lowest.bandwidth!) lowest = variant;
+  }
+  return lowest.uri;
 }
 
 StreamKindVerdict _classifyMaster(String playlistText) {
@@ -231,21 +322,58 @@ List<String> _segmentUris(String playlistText) {
   ];
 }
 
+/// Parses every `EXT-X-STREAM-INF` variant, attaching each one's URI (the
+/// next non-blank, non-tag line) where the playlist got that far.
+///
+/// A variant is created by its **tag**, never by its URI line, so the list
+/// this returns is the same length with the same attributes as before URIs
+/// were captured at all — [_classifyMaster]'s verdict cannot shift because a
+/// URI line is missing. Only [pickSoundModeUri] cares whether it is there.
 List<_Variant> _parseStreamInfVariants(String playlistText) {
   const marker = '#EXT-X-STREAM-INF:';
   final variants = <_Variant>[];
+  var awaitingUriFor = -1;
+  for (final rawLine in playlistText.split(RegExp(r'\r?\n'))) {
+    final line = rawLine.trim();
+    if (line.startsWith(marker)) {
+      final attrs = _parseAttributeList(line.substring(marker.length));
+      final bandwidthStr = attrs['BANDWIDTH'];
+      variants.add(_Variant(
+        bandwidth: bandwidthStr != null ? int.tryParse(bandwidthStr) : null,
+        codecs: attrs['CODECS'],
+        hasResolution: attrs.containsKey('RESOLUTION'),
+      ));
+      awaitingUriFor = variants.length - 1;
+      continue;
+    }
+    if (awaitingUriFor < 0) continue;
+    // Blank lines and any other tag between the variant and its URI are
+    // skipped rather than ending the wait -- real masters put EXT-X-I-FRAME
+    // and vendor tags in there.
+    if (line.isEmpty || line.startsWith('#')) continue;
+    variants[awaitingUriFor] = variants[awaitingUriFor].withUri(line);
+    awaitingUriFor = -1;
+  }
+  return variants;
+}
+
+/// Parses the `EXT-X-MEDIA:TYPE=AUDIO` renditions that have their own `URI`.
+List<_AudioRendition> _parseAudioRenditions(String playlistText) {
+  const marker = '#EXT-X-MEDIA:';
+  final renditions = <_AudioRendition>[];
   for (final rawLine in playlistText.split(RegExp(r'\r?\n'))) {
     final line = rawLine.trim();
     if (!line.startsWith(marker)) continue;
     final attrs = _parseAttributeList(line.substring(marker.length));
-    final bandwidthStr = attrs['BANDWIDTH'];
-    variants.add(_Variant(
-      bandwidth: bandwidthStr != null ? int.tryParse(bandwidthStr) : null,
-      codecs: attrs['CODECS'],
-      hasResolution: attrs.containsKey('RESOLUTION'),
+    if ((attrs['TYPE'] ?? '').toUpperCase() != 'AUDIO') continue;
+    final uri = attrs['URI'];
+    if (uri == null || uri.isEmpty) continue;
+    renditions.add(_AudioRendition(
+      uri: uri,
+      isDefault: (attrs['DEFAULT'] ?? '').toUpperCase() == 'YES',
     ));
   }
-  return variants;
+  return renditions;
 }
 
 /// Splits an `EXT-X-STREAM-INF` attribute list on commas that aren't inside a

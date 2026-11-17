@@ -31,7 +31,7 @@ void main() {
         ..close();
     });
 
-    final verdict = await StreamKindProbe.probe('$baseUrl/stream', null);
+    final verdict = (await StreamKindProbe.probe('$baseUrl/stream', null)).verdict;
 
     expect(verdict.kind, StreamKind.audioOnly);
     expect(verdict.confidence, KindConfidence.strong);
@@ -46,7 +46,7 @@ void main() {
         ..close();
     });
 
-    final verdict = await StreamKindProbe.probe('$baseUrl/stream', null);
+    final verdict = (await StreamKindProbe.probe('$baseUrl/stream', null)).verdict;
 
     expect(verdict.kind, StreamKind.audioOnly);
     expect(verdict.source, KindSource.icyHeader);
@@ -63,11 +63,162 @@ void main() {
         ..close();
     });
 
-    final verdict = await StreamKindProbe.probe('$baseUrl/live.m3u8', null);
+    final verdict = (await StreamKindProbe.probe('$baseUrl/live.m3u8', null)).verdict;
 
     expect(verdict.kind, StreamKind.audioOnly);
     expect(verdict.confidence, KindConfidence.strong);
     expect(verdict.source, KindSource.hlsMasterCodecs);
+  });
+
+  test('a muxed master also yields the sound-mode URI, unjoined', () async {
+    server.listen((request) {
+      request.response
+        ..headers.set('content-type', 'application/vnd.apple.mpegurl')
+        ..statusCode = 200
+        ..write('#EXTM3U\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=3300000,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1280x720\n'
+            'v_720.m3u8\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=800000,CODECS="avc1.4d401f,mp4a.40.2",RESOLUTION=640x360\n'
+            'v_360.m3u8\n')
+        ..close();
+    });
+
+    final result = await StreamKindProbe.probe('$baseUrl/live.m3u8', null);
+
+    expect(result.verdict.kind, StreamKind.video);
+    // Relative, exactly as the playlist wrote it -- joining it against a
+    // freshly resolved master is the caller's job, since this value gets
+    // cached for days and an absolute URL's token would not survive that.
+    expect(result.soundModeUri, 'v_360.m3u8');
+  });
+
+  test('an audio rendition wins over the variants', () async {
+    server.listen((request) {
+      request.response
+        ..headers.set('content-type', 'application/vnd.apple.mpegurl')
+        ..statusCode = 200
+        ..write('#EXTM3U\n'
+            '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="it",DEFAULT=YES,URI="audio_it.m3u8"\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=800000,CODECS="avc1.4d401f,mp4a.40.2",RESOLUTION=640x360,AUDIO="a"\n'
+            'v_360.m3u8\n')
+        ..close();
+    });
+
+    final result = await StreamKindProbe.probe('$baseUrl/live.m3u8', null);
+
+    expect(result.soundModeUri, 'audio_it.m3u8');
+  });
+
+  test('a header-settled stream carries no sound-mode URI', () async {
+    server.listen((request) {
+      request.response
+        ..headers.set('content-type', 'audio/mpeg')
+        ..statusCode = 200
+        ..write('ignored')
+        ..close();
+    });
+
+    final result = await StreamKindProbe.probe('$baseUrl/stream', null);
+
+    expect(result.verdict.kind, StreamKind.audioOnly);
+    // A progressive stream has no variants to choose between at all.
+    expect(result.soundModeUri, isNull);
+  });
+
+  /// Redirects [from] to [to], and serves a muxed master for anything else.
+  void serveRedirect(String from, String to) {
+    server.listen((request) {
+      if (request.uri.path == from) {
+        request.response
+          ..statusCode = HttpStatus.found
+          ..headers.set('location', to)
+          ..close();
+        return;
+      }
+      request.response
+        ..headers.set('content-type', 'application/vnd.apple.mpegurl')
+        ..statusCode = 200
+        ..write('#EXTM3U\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=3300000,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1280x720\n'
+            'v_720.m3u8\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=800000,CODECS="avc1.4d401f,mp4a.40.2",RESOLUTION=640x360\n'
+            'v_360.m3u8\n')
+        ..close();
+    });
+  }
+
+  test('a direct .m3u8 that redirects out of its directory is not pinned',
+      () async {
+    // Nothing resolves a `.m3u8` at open time, so the relative pin would be
+    // joined against the pre-redirect path and point at nothing. Better to
+    // leave the channel on today's behaviour than to waste an open per start.
+    serveRedirect('/live.m3u8', '/elsewhere/master.m3u8');
+
+    final result = await StreamKindProbe.probe('$baseUrl/live.m3u8', null);
+
+    // Still classified -- only the pin is withheld.
+    expect(result.verdict.kind, StreamKind.video);
+    expect(result.soundModeUri, isNull);
+  });
+
+  test('a redirect that stays in the same directory still pins', () async {
+    // The original URL is a correct base for a sibling URI either way.
+    serveRedirect('/live.m3u8', '/master.m3u8');
+
+    final result = await StreamKindProbe.probe('$baseUrl/live.m3u8', null);
+
+    expect(result.verdict.kind, StreamKind.video);
+    expect(result.soundModeUri, 'v_360.m3u8');
+  });
+
+  test('a multi-hop chain is resolved per hop, not against the original',
+      () async {
+    // `RedirectInfo.location` is the raw `Location` header of that hop --
+    // dart:io does not write a resolved absolute URI back onto it -- so each
+    // hop must be resolved against the previous one. Here hop 1 goes to
+    // `/deep/x.m3u8` and hop 2 is the relative `master.m3u8`, which really
+    // lands in `/deep/`. Resolving only the last hop against the original URL
+    // instead yields `/master.m3u8`, reads as "same directory as
+    // /live.m3u8", and would pin a URI whose base is wrong by a directory.
+    server.listen((request) {
+      switch (request.uri.path) {
+        case '/live.m3u8':
+          request.response
+            ..statusCode = HttpStatus.found
+            ..headers.set('location', '/deep/x.m3u8')
+            ..close();
+        case '/deep/x.m3u8':
+          request.response
+            ..statusCode = HttpStatus.found
+            ..headers.set('location', 'master.m3u8')
+            ..close();
+        default:
+          request.response
+            ..headers.set('content-type', 'application/vnd.apple.mpegurl')
+            ..statusCode = 200
+            ..write('#EXTM3U\n'
+                '#EXT-X-STREAM-INF:BANDWIDTH=3300000,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1280x720\n'
+                'v_720.m3u8\n'
+                '#EXT-X-STREAM-INF:BANDWIDTH=800000,CODECS="avc1.4d401f,mp4a.40.2",RESOLUTION=640x360\n'
+                'v_360.m3u8\n')
+            ..close();
+      }
+    });
+
+    final result = await StreamKindProbe.probe('$baseUrl/live.m3u8', null);
+
+    expect(result.verdict.kind, StreamKind.video);
+    expect(result.soundModeUri, isNull);
+  });
+
+  test('a suffix-less URL that redirects away is still pinned', () async {
+    // A relinker: `NativeAudioService` resolves it on Dart's stack before
+    // every open and joins against the result, so the redirect is handled.
+    serveRedirect('/relinker', '/cdn/abc/master.m3u8');
+
+    final result = await StreamKindProbe.probe('$baseUrl/relinker', null);
+
+    expect(result.soundModeUri, 'v_360.m3u8');
   });
 
   test('a non-2xx status is unknown, no body read attempted', () async {
@@ -77,7 +228,7 @@ void main() {
         ..close();
     });
 
-    final verdict = await StreamKindProbe.probe('$baseUrl/gone', null);
+    final verdict = (await StreamKindProbe.probe('$baseUrl/gone', null)).verdict;
 
     expect(verdict, StreamKindVerdict.unknown);
   });
@@ -90,7 +241,7 @@ void main() {
       });
 
       final stopwatch = Stopwatch()..start();
-      final verdict = await StreamKindProbe.probe('$baseUrl/stall', null);
+      final verdict = (await StreamKindProbe.probe('$baseUrl/stall', null)).verdict;
       stopwatch.stop();
 
       expect(verdict, StreamKindVerdict.unknown);
@@ -121,7 +272,7 @@ void main() {
           ..close();
       });
 
-      final verdict = await StreamKindProbe.probe('$baseUrl/live.m3u8', null);
+      final verdict = (await StreamKindProbe.probe('$baseUrl/live.m3u8', null)).verdict;
 
       expect(verdict.kind, StreamKind.audioOnly);
       expect(verdict.confidence, KindConfidence.strong);
@@ -135,10 +286,11 @@ void main() {
     final refusedPort = server.port;
     await server.close(force: true);
 
-    final verdict = await StreamKindProbe.probe(
+    final verdict = (await StreamKindProbe.probe(
       'http://127.0.0.1:$refusedPort/nothing-here',
       null,
-    );
+    ))
+        .verdict;
 
     expect(verdict, StreamKindVerdict.unknown);
 
@@ -162,7 +314,7 @@ void main() {
           ..close();
       });
 
-      final verdict = await StreamKindProbe.probe('$baseUrl/loop', null);
+      final verdict = (await StreamKindProbe.probe('$baseUrl/loop', null)).verdict;
 
       expect(verdict, StreamKindVerdict.unknown);
     },
@@ -186,10 +338,11 @@ void main() {
         socket.close();
       });
 
-      final verdict = await StreamKindProbe.probe(
+      final verdict = (await StreamKindProbe.probe(
         'http://127.0.0.1:${rawServer.port}/garbage',
         null,
-      );
+      ))
+          .verdict;
 
       expect(verdict, StreamKindVerdict.unknown);
     },

@@ -1040,6 +1040,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       url: _currentChannel.url,
       title: _currentChannel.name,
       logo: _currentChannel.logo,
+      soundModeUri:
+          StreamKindClassifier.peekSoundModeUri(_currentChannel),
     );
     if (!mounted) return;
     if (generation != null && generation != _modeGeneration) return;
@@ -1588,6 +1590,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       url: _currentChannel.url,
       title: _currentChannel.name,
       logo: _currentChannel.logo,
+      soundModeUri:
+          StreamKindClassifier.peekSoundModeUri(_currentChannel),
     );
     if (!mounted) return;
     if (!success) {

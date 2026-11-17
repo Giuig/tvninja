@@ -21,12 +21,18 @@ const _video = StreamKindVerdict(
   KindSource.hlsMasterCodecs,
 );
 
+/// The cache's own prefs key, mirrored here because these tests read and
+/// seed the raw blob. Bumped to `…2` on 2026-11-17 when sound-mode URIs were
+/// added, so pre-existing entries (which carry no URI and live up to 30 days)
+/// are dropped once rather than suppressing the pin.
+const String _testPrefsKey = 'streamKindCache2';
+
 /// Reads the raw persisted map straight out of the mocked
 /// `SharedPreferences`, so tests can check TTLs and "unknown never persists"
 /// without depending on [StreamKindCache.load]'s own filtering.
 Future<Map<String, dynamic>> _persistedEntries() async {
   final prefs = await SharedPreferences.getInstance();
-  final raw = prefs.getString('streamKindCache');
+  final raw = prefs.getString(_testPrefsKey);
   if (raw == null) return {};
   return jsonDecode(raw) as Map<String, dynamic>;
 }
@@ -93,7 +99,7 @@ void main() {
   test('load() restores an unexpired entry and drops an expired one', () async {
     final now = DateTime.now();
     SharedPreferences.setMockInitialValues({
-      'streamKindCache': jsonEncode({
+      _testPrefsKey: jsonEncode({
         'still-good': {
           'kind': 'audioOnly',
           'confidence': 'strong',
@@ -166,4 +172,91 @@ void main() {
     },
     timeout: const Timeout(Duration(seconds: 30)),
   );
+
+  group('sound-mode URI', () {
+    test('put then getSoundModeUri round-trips', () {
+      StreamKindCache.put('ch-pin', _video, soundModeUri: 'v_360.m3u8');
+      expect(StreamKindCache.getSoundModeUri('ch-pin'), 'v_360.m3u8');
+      expect(StreamKindCache.get('ch-pin'), _video);
+    });
+
+    test('a verdict cached without a URI reads back as null', () {
+      StreamKindCache.put('ch-nopin', _video);
+      expect(StreamKindCache.get('ch-nopin'), _video);
+      expect(StreamKindCache.getSoundModeUri('ch-nopin'), isNull);
+    });
+
+    test('a miss returns null rather than throwing', () {
+      expect(StreamKindCache.getSoundModeUri('never-seen'), isNull);
+    });
+
+    test('the URI persists and survives load()', () async {
+      StreamKindCache.put('ch-pin', _video, soundModeUri: 'audio_it.m3u8');
+      await Future<void>.delayed(Duration.zero);
+
+      final persisted = await _persistedEntries();
+      expect(
+        (persisted['ch-pin'] as Map<String, dynamic>)['soundUri'],
+        'audio_it.m3u8',
+      );
+
+      StreamKindCache.resetForTest();
+      await StreamKindCache.load();
+      expect(StreamKindCache.getSoundModeUri('ch-pin'), 'audio_it.m3u8');
+    });
+
+    test('an entry with no URI omits the key rather than writing null',
+        () async {
+      StreamKindCache.put('ch-nopin', _video);
+      await Future<void>.delayed(Duration.zero);
+
+      final persisted = await _persistedEntries();
+      expect(
+        (persisted['ch-nopin'] as Map<String, dynamic>).containsKey('soundUri'),
+        isFalse,
+      );
+    });
+
+    test('an entry written before this field existed still loads', () async {
+      // The 1.9.0-and-earlier shape, in case such a blob is ever read back:
+      // the verdict must survive and the URI must read as a plain miss.
+      final now = DateTime.now();
+      SharedPreferences.setMockInitialValues({
+        _testPrefsKey: jsonEncode({
+          'legacy': {
+            'kind': 'video',
+            'confidence': 'strong',
+            'source': 'hlsMasterCodecs',
+            'expiresAt': now.add(const Duration(days: 3)).toIso8601String(),
+          },
+        }),
+      });
+      StreamKindCache.resetForTest();
+      await StreamKindCache.load();
+
+      expect(StreamKindCache.get('legacy'), _video);
+      expect(StreamKindCache.getSoundModeUri('legacy'), isNull);
+    });
+
+    test('an expired entry drops its URI with the verdict', () async {
+      final now = DateTime.now();
+      SharedPreferences.setMockInitialValues({
+        _testPrefsKey: jsonEncode({
+          'stale': {
+            'kind': 'video',
+            'confidence': 'strong',
+            'source': 'hlsMasterCodecs',
+            'expiresAt': now.add(const Duration(days: 1)).toIso8601String(),
+            'soundUri': 'v_360.m3u8',
+          },
+        }),
+      });
+      StreamKindCache.resetForTest();
+      await StreamKindCache.load();
+      expect(StreamKindCache.getSoundModeUri('stale'), 'v_360.m3u8');
+
+      await StreamKindCache.clear();
+      expect(StreamKindCache.getSoundModeUri('stale'), isNull);
+    });
+  });
 }

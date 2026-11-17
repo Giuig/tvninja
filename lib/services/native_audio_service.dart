@@ -6,6 +6,8 @@ import 'package:tvninja/services/audio_recovery.dart';
 import 'package:tvninja/services/mpv_options.dart';
 import 'package:tvninja/services/network_reachability.dart';
 import 'package:tvninja/services/video/stream_diagnostics.dart';
+import 'package:tvninja/services/video/stream_format_hint.dart';
+import 'package:tvninja/services/video/stream_url_resolver.dart';
 
 class _CancellationException implements Exception {}
 
@@ -54,7 +56,56 @@ class NativeAudioService {
   static bool _isBackgroundMode = false;
   static PlaybackState _currentState = PlaybackState();
   static bool _isBuffering = false;
+
+  /// The channel's own URL — the session's **identity**, not what mpv was
+  /// handed. [play]'s same-URL guard, [currentUrl]'s readers (the home page
+  /// and channel list, deciding whether a leftover session needs [stop]) and
+  /// the reachability check all compare against a channel, so this must stay
+  /// the channel URL even when sound mode pins something narrower.
   static String? _currentUrl;
+
+  /// What mpv was actually told to open: the pinned audio rendition or
+  /// lowest-bandwidth variant where there was one to pick, otherwise the same
+  /// thing as [_masterUrl]. The reconnect chain reopens *this*.
+  static String? _openedUrl;
+
+  /// The resolved master playlist, kept as the fallback for when a pinned URI
+  /// turns out to be unusable (a stale CDN token, a variant that 404s, a
+  /// relinker whose redirect target moved between the probe and now).
+  ///
+  /// Null when nothing was pinned, i.e. when [_openedUrl] is already this.
+  static String? _masterUrl;
+
+  /// The session's sound-mode pin, **relative and unjoined**, as the master
+  /// playlist wrote it — or null when this channel is not pinned, or when a
+  /// pin has been abandoned by [_abandonPin].
+  ///
+  /// Kept rather than only its joined result because [_refreshOpenUrl] rebuilds
+  /// the absolute URL before every open, the first and each reconnect alike.
+  static String? _soundModeUri;
+
+  /// Bounds the master resolution [_refreshOpenUrl] may need. The pin is an
+  /// optimisation, so it must never hold up an open or a reconnect for long;
+  /// overrunning this just means the channel plays unpinned.
+  static const Duration _pinResolveBudget = Duration(seconds: 2);
+
+  @visibleForTesting
+  static String? get debugOpenedUrl => _openedUrl;
+
+  @visibleForTesting
+  static String? get debugMasterUrl => _masterUrl;
+
+  @visibleForTesting
+  static String? get debugSoundModeUri => _soundModeUri;
+
+  /// Runs the pin rebuild on its own, so a test can prove that a second call
+  /// re-resolves the master instead of reusing the URL built by the first.
+  @visibleForTesting
+  static Future<void> resolveOpenUrlForTest() => _refreshOpenUrl();
+
+  /// Runs one reconnect attempt, the way the recovery chain does.
+  @visibleForTesting
+  static Future<void> reopenForTest() => _reopenCurrentUrl();
   static StreamSubscription<String>? _errorSubscription;
   static int _playRequestId = 0;
   static Completer<void>? _playCanceller;
@@ -177,7 +228,7 @@ class NativeAudioService {
     _isInitialized = true;
 
     _audioPlayer = playerFactory();
-    await applyLiveStreamMpvOptions(_audioPlayer);
+    await applyLiveStreamMpvOptions(_audioPlayer, soundOnly: true);
 
     _listenToNativeEvents();
 
@@ -477,14 +528,140 @@ class NativeAudioService {
     _errorController.add(message);
   }
 
+  /// Joins a sound-mode URI against the master it was read from.
+  ///
+  /// An absolute URI comes back unchanged — [Uri.resolve]'s own behaviour —
+  /// which is the safest case, since nothing about the master's path can make
+  /// it wrong. Anything unparseable falls back to [master], the URL the app
+  /// opened before any pinning existed.
+  @visibleForTesting
+  static String joinSoundModeUriForTest(String master, String soundModeUri) =>
+      _joinSoundModeUri(master, soundModeUri);
+
+  static String _joinSoundModeUri(String master, String soundModeUri) {
+    try {
+      return Uri.parse(master).resolve(soundModeUri).toString();
+    } catch (_) {
+      return master;
+    }
+  }
+
+  /// Works out what to open for [channelUrl] and the relative [pin], touching
+  /// **no** shared state.
+  ///
+  /// Pure on purpose. It awaits a master resolution of up to
+  /// [_pinResolveBudget], and every static field of this service can be
+  /// replaced in that window by a zap or a [stop]. An earlier version wrote
+  /// `_openedUrl`/`_masterUrl` itself after that await, which let a slow
+  /// resolve for the channel being left overwrite the fields of the channel
+  /// now playing — so it opened the previous stream under the new channel's
+  /// identity. Returning the answer instead means the caller applies it only
+  /// after its own staleness check.
+  ///
+  /// A direct `.m3u8` is joined as it stands. A suffix-less URL (a relinker)
+  /// is resolved first, under [_pinResolveBudget], and if that does not yield
+  /// a different URL the channel is left **unpinned** rather than joined
+  /// against a base known to be wrong — which is exactly today's behaviour, so
+  /// the worst case is no saving, never a broken channel.
+  static Future<({String openUrl, String? masterUrl})> _computeOpenUrl(
+    String channelUrl,
+    String? pin,
+  ) async {
+    if (pin == null) return (openUrl: channelUrl, masterUrl: null);
+
+    var master = channelUrl;
+    var mayPin = true;
+    if (guessStreamFormat(channelUrl) == StreamFormatHint.unknown) {
+      try {
+        final resolved = await StreamUrlResolver.resolve(channelUrl, null)
+            .timeout(_pinResolveBudget);
+        if (resolved.url != channelUrl) {
+          master = resolved.url;
+        } else {
+          mayPin = false;
+        }
+      } catch (_) {
+        mayPin = false;
+      }
+    }
+
+    final pinned = mayPin ? _joinSoundModeUri(master, pin) : channelUrl;
+    if (pinned == master) {
+      debugPrint('[Audio] Sound-mode pin skipped, opening $channelUrl');
+      return (openUrl: channelUrl, masterUrl: null);
+    }
+    debugPrint('[Audio] Sound-mode pin: $pinned (master $master)');
+    return (openUrl: pinned, masterUrl: master);
+  }
+
+  /// Rebuilds [_openedUrl] and [_masterUrl] for the session that is current
+  /// **when the rebuild finishes**, and does nothing at all if that is no
+  /// longer the session it started for.
+  ///
+  /// Used by the reconnect chain, where there is no [play] canceller to lean
+  /// on. The identity it checks is the whole of what a new session replaces:
+  /// the play request id, the channel URL and the pin.
+  static Future<void> _refreshOpenUrl() async {
+    final requestId = _playRequestId;
+    final channelUrl = _currentUrl;
+    if (channelUrl == null) return;
+    final pin = _soundModeUri;
+
+    final computed = await _computeOpenUrl(channelUrl, pin);
+
+    if (requestId != _playRequestId ||
+        _currentUrl != channelUrl ||
+        _soundModeUri != pin) {
+      debugPrint('[Audio] Pin rebuild superseded, dropping its result');
+      return;
+    }
+    _openedUrl = computed.openUrl;
+    _masterUrl = computed.masterUrl;
+  }
+
+  /// Gives up this session's pin for good, falling back to the master (or the
+  /// channel URL), and says why.
+  ///
+  /// Used where the pin itself is the suspect: a first open that never
+  /// produced audio, or a start that failed outright. Clearing
+  /// [_soundModeUri] is what makes it stick — [_refreshOpenUrl] would
+  /// otherwise rebuild the pin on the next attempt.
+  static void _abandonPin(String why) {
+    if (_soundModeUri == null) return;
+    debugPrint('[Audio] Dropping the sound-mode pin: $why');
+    _soundModeUri = null;
+    _openedUrl = _masterUrl ?? _currentUrl;
+    _masterUrl = null;
+  }
+
   /// The recovery chain's `reopen`: starts the current URL again.
   ///
   /// Works with or without background mode: the notification is only updated
   /// when the foreground service is up.
   static Future<void> _reopenCurrentUrl() async {
-    final url = _currentUrl;
-    if (url == null || !_mayReconnect) return;
+    if (_currentUrl == null || !_mayReconnect) return;
     final requestId = _playRequestId;
+
+    // A pin that never produced audio is itself the suspect — a stale token on
+    // the very first open, a variant that 404s, a base that was wrong — so it
+    // is given up for good, per the ruling's "fall back to the master after
+    // the first failed attempt".
+    //
+    // A pin that *did* play is kept: on a flaky mobile link reconnects are
+    // constant and have nothing to do with which URL was opened, and dropping
+    // it on any dropout would surrender the whole saving in the one case the
+    // fix exists for. It is still rebuilt below rather than reused, so a token
+    // that expired while it played is replaced with a fresh one.
+    if (_soundModeUri != null && !_recovery.hasProgressed) {
+      _abandonPin('it never played');
+    }
+    await _refreshOpenUrl();
+    // The resolve above may have taken up to [_pinResolveBudget]: a zap or a
+    // stop in that window owns the state now.
+    if (requestId != _playRequestId || !_mayReconnect) return;
+
+    final url = _openedUrl ?? _currentUrl;
+    if (url == null) return;
     debugPrint('[Audio] Reconnect attempt ${_recovery.attempt}');
     _lengthEvidence.reset();
     try {
@@ -503,9 +680,11 @@ class NativeAudioService {
           'title': _currentState.metadata?.title ?? 'TV Ninja',
         });
         // A zap or a stop during the call above: this attempt is for a stream
-        // nobody is waiting on any more.
+        // nobody is waiting on any more. Compared against [_openedUrl], which
+        // is what `url` was read from — against [_currentUrl] this would be
+        // unequal for every pinned channel and no reconnect would ever run.
         if (requestId != _playRequestId ||
-            url != _currentUrl ||
+            url != _openedUrl ||
             !_mayReconnect) {
           return;
         }
@@ -640,10 +819,23 @@ class NativeAudioService {
     }
   }
 
+  /// [soundModeUri] is the URI `StreamKindClassifier.peekSoundModeUri` found
+  /// for this channel — the audio rendition, or the lowest-bandwidth variant,
+  /// **as the master playlist wrote it** and therefore unjoined. Passing it
+  /// implements the owner's 2026-11-17 ruling, "sound mode takes the smallest
+  /// stream": without it mpv is handed the master, picks the top variant, and
+  /// streams its full video+audio while only the audio is played (352 MB /
+  /// 10 min measured, ~2.1 GB/h), plus a 2-9 MB first-segment prefix of every
+  /// other variant on each open and each reconnect.
+  ///
+  /// It is joined here, against a master resolved on this call, rather than
+  /// stored joined: the value is cached per channel for up to 30 days and a
+  /// CDN token in an absolute URL would not survive that.
   static Future<bool> play({
     required String url,
     String? title,
     String? logo,
+    String? soundModeUri,
   }) async {
     if (kIsWeb) {
       debugPrint('[Audio] Web mode - not starting background audio');
@@ -687,10 +879,26 @@ class NativeAudioService {
 
       await checkCancelled();
 
+      // Every field describing this session is set together, with no await in
+      // between, and the old chain is reset before [_refreshOpenUrl] below can
+      // yield. The previous session's recovery can still fire in that window,
+      // and it must never find this channel's identity paired with the last
+      // one's URLs.
       _currentUrl = url;
+      _soundModeUri = soundModeUri;
+      _openedUrl = url;
+      _masterUrl = null;
       _sessionWanted = true;
       _lengthEvidence.reset();
       _recovery.reset();
+
+      // Computed first, applied only once [checkCancelled] has confirmed this
+      // play is still the current one — a zap or a stop during the resolve
+      // throws here, so a superseded play never writes these fields.
+      final computed = await _computeOpenUrl(url, soundModeUri);
+      await checkCancelled();
+      _openedUrl = computed.openUrl;
+      _masterUrl = computed.masterUrl;
 
       // Reuse or replace the current player.
       // After stop(), _audioPlayer is already a fresh unconfigured Player —
@@ -700,14 +908,14 @@ class NativeAudioService {
       _isInitialized = true;
       if (oldPlayer == null) {
         // Reuse the fresh player left by stop()
-        await applyLiveStreamMpvOptions(_audioPlayer);
+        await applyLiveStreamMpvOptions(_audioPlayer, soundOnly: true);
         await checkCancelled();
         await _setupPlayerListeners();
         await checkCancelled();
       } else {
         // Create new player first so mpv has a valid callback target during old-player teardown
         _audioPlayer = playerFactory();
-        await applyLiveStreamMpvOptions(_audioPlayer);
+        await applyLiveStreamMpvOptions(_audioPlayer, soundOnly: true);
         await checkCancelled();
         await _setupPlayerListeners();
         await checkCancelled();
@@ -738,7 +946,7 @@ class NativeAudioService {
       }
 
       await _audioPlayer
-          .open(Media(url), play: true)
+          .open(Media(_openedUrl ?? url), play: true)
           .timeout(const Duration(seconds: 10));
       await checkCancelled();
       debugPrint('[Audio] Media opened successfully');
@@ -791,6 +999,13 @@ class NativeAudioService {
     if (requestId != _playRequestId) return;
     _sessionWanted = false;
     _recovery.reset();
+    // The open threw or timed out, so a pin is the one new thing that could
+    // have caused it. Dropping it here means the Retry the page offers, and
+    // any later start of this same channel, goes back to the URL the app
+    // opened before pinning existed — the plan's guarantee that a bad pin can
+    // never make a channel less playable than it is today. Only the
+    // asynchronous `stream.error` route fell back before this.
+    _abandonPin('the start failed');
 
     // Everything is decided and both stops are issued before the first await,
     // and nothing static is read after one. The stop of the service can take a
@@ -897,6 +1112,9 @@ class NativeAudioService {
 
       _isBackgroundMode = false;
       _currentUrl = null;
+      _openedUrl = null;
+      _masterUrl = null;
+      _soundModeUri = null;
       _sessionWanted = false;
       _gaveUp = false;
       _recovery.reset();

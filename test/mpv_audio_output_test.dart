@@ -98,4 +98,36 @@ void main() {
       });
     }
   });
+
+  group('the demuxer read-ahead ceiling', () {
+    test('sound mode gets 1MiB, not the video-sized 8MiB', () async {
+      // A sound-mode player decodes audio only and needs ~96 KB; the rest was
+      // read-ahead of bytes nothing would ever use, paid again on every
+      // reconnect.
+      final native = _RecordingNative();
+      await applyLiveStreamMpvOptions(_FakePlayer(native), soundOnly: true);
+      expect(native.writes['demuxer-max-bytes'], '1MiB');
+    });
+
+    test('video keeps 8MiB', () async {
+      final native = _RecordingNative();
+      await applyLiveStreamMpvOptions(_FakePlayer(native));
+      expect(native.writes['demuxer-max-bytes'], '8MiB');
+    });
+
+    test('nothing else about the live-stream options differs', () async {
+      // The guard that matters: soundOnly must be a one-property change, not
+      // a second tuning profile that can drift away from the video one.
+      final sound = _RecordingNative();
+      final video = _RecordingNative();
+      await applyLiveStreamMpvOptions(_FakePlayer(sound), soundOnly: true);
+      await applyLiveStreamMpvOptions(_FakePlayer(video));
+
+      final soundRest = Map.of(sound.writes)..remove('demuxer-max-bytes');
+      final videoRest = Map.of(video.writes)..remove('demuxer-max-bytes');
+      expect(soundRest, videoRest);
+      expect(sound.writes['demuxer-max-back-bytes'], '0');
+      expect(sound.writes['cache-pause'], 'no');
+    });
+  });
 }
