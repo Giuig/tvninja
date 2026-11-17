@@ -6,6 +6,20 @@ import 'video/stream_format_hint.dart';
 /// Cached emulator detection result — computed once per app session.
 bool? _cachedIsEmulator;
 
+/// The audio outputs mpv is asked to try on Android, in order: Java
+/// `AudioTrack` first, OpenSL ES kept behind it so a device where the
+/// AudioTrack output fails to open still plays.
+///
+/// Why not media_kit's own `ao=opensles`: mpv's OpenSL ES output is created
+/// with the platform's default performance mode, which is the low-latency one.
+/// That puts the stream on the fast mixer, and the fast path bypasses the
+/// pre/post-processing the device applies to a normal track (Samsung's EQ,
+/// measured on an S24 Ultra 2026-11-17: video mode, an ExoPlayer AudioTrack,
+/// was processed and sound mode, the OpenSL ES player, was not, so sound mode
+/// played louder). The AudioTrack output builds a plain `MODE_STREAM` track
+/// with `USAGE_MEDIA` and no performance-mode flag, so it is a normal track.
+const String androidAudioOutputs = 'audiotrack,opensles';
+
 /// Applies libmpv options tuned for live IPTV/HLS streams.
 ///
 /// Key settings:
@@ -56,6 +70,13 @@ Future<void> applyLiveStreamMpvOptions(Player player) async {
     // latency (measured ~3.4-4.7s gap matching the 5s default almost exactly).
     native.setProperty('demuxer-lavf-analyzeduration', '0.5');
 
+    // Android only; every other platform keeps its own default output.
+    // Awaited, unlike the sets above: it reads `ao` first, and every caller
+    // awaits this function before the first `loadfile`.
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      await applyAndroidAudioOutput(native);
+    }
+
     // Emulator-aware hardware decode: disable on emulators to prevent freeze.
     // Result is cached after the first call — DeviceInfoPlugin is an async
     // platform call and running it on every Player() creation adds 50-150 ms.
@@ -72,6 +93,34 @@ Future<void> applyLiveStreamMpvOptions(Player player) async {
     }
   } catch (_) {
     // Non-fatal: platform doesn't support setProperty
+  }
+}
+
+/// Points mpv at [androidAudioOutputs] on [native] (a media_kit `NativePlayer`).
+///
+/// Same post-init `setProperty` mechanism media_kit itself uses for its
+/// `ao=opensles` default: `setProperty` waits for the player's initialisation,
+/// which is where media_kit writes that default, so this write lands after it
+/// and wins. No output is opened before the first `loadfile`.
+///
+/// Left alone when media_kit chose `ao=null` (an emulator at API <= 25, where
+/// it switches the audio off because OpenSL ES is broken there): turning audio
+/// back on would undo that on purpose. If `ao` cannot be read the list is set
+/// anyway, because that is the default path.
+@visibleForTesting
+Future<void> applyAndroidAudioOutput(dynamic native) async {
+  try {
+    String? current;
+    try {
+      current = await (native.getProperty('ao') as Future)
+          .timeout(const Duration(milliseconds: 500)) as String?;
+    } catch (_) {
+      current = null;
+    }
+    if (current == 'null') return;
+    await (native.setProperty('ao', androidAudioOutputs) as Future);
+  } catch (_) {
+    // Non-fatal: mpv keeps the output media_kit chose.
   }
 }
 
