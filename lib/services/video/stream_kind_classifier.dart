@@ -29,6 +29,19 @@ class StreamKindClassifier {
     return StreamKindCache.get(channel.uniqueId);
   }
 
+  /// The URI sound mode should pin for [channel], as the master playlist
+  /// wrote it (relative, unjoined), or `null` when there is nothing to pin.
+  ///
+  /// Synchronous and cache-only by design: [classify] has already run and
+  /// cached this before the player opens, and a channel whose entry predates
+  /// the field, or that was answered by `radio="true"` without a probe, has
+  /// nothing worth pinning anyway — a bare audio stream is already the
+  /// smallest thing there is.
+  static String? peekSoundModeUri(Channel channel) {
+    if (channel.isRadio) return null;
+    return StreamKindCache.getSoundModeUri(channel.uniqueId);
+  }
+
   /// Resolves [channel]'s stream kind, preferring [peek] and probing only on
   /// a miss. Concurrent calls for the same channel -- rapid zapping back to
   /// a channel still being probed, for instance -- share the one in-flight
@@ -45,9 +58,14 @@ class StreamKindClassifier {
 
   static Future<StreamKindVerdict> _probeAndCache(Channel channel) async {
     try {
-      final verdict = await StreamKindProbe.probe(channel.url, _headersFor(channel));
-      StreamKindCache.put(channel.uniqueId, verdict);
-      return verdict;
+      final result =
+          await StreamKindProbe.probe(channel.url, _headersFor(channel));
+      StreamKindCache.put(
+        channel.uniqueId,
+        result.verdict,
+        soundModeUri: result.soundModeUri,
+      );
+      return result.verdict;
     } finally {
       _inFlight.remove(channel.uniqueId);
     }

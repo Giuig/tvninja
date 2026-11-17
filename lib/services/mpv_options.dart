@@ -29,14 +29,20 @@ const String androidAudioOutputs = 'audiotrack,opensles';
 /// - cache-pause disabled (live cache is always "low"; pausing causes
 ///   micro-stutters when the audio pipeline resets on resume)
 /// - Emulator-aware: disables hardware decode on emulators to prevent freeze
-Future<void> applyLiveStreamMpvOptions(Player player) async {
+Future<void> applyLiveStreamMpvOptions(Player player,
+    {bool soundOnly = false}) async {
   if (kIsWeb) return;
   try {
     final native = player.platform as dynamic;
     // Cache — slightly increased for faster initial connection
     native.setProperty('cache', 'yes');
     native.setProperty('cache-secs', '6');
-    native.setProperty('demuxer-max-bytes', '8MiB');
+    // 8 MiB is sized for video. A sound-mode player decodes audio only and
+    // needs on the order of 96 KB, so the rest is read-ahead of bytes nothing
+    // will ever use — paid again on every reconnect, which on a flaky mobile
+    // link is often. 1 MiB keeps a wide safety factor over that ~96 KB while
+    // cutting the ceiling eightfold. Video keeps 8 MiB untouched.
+    native.setProperty('demuxer-max-bytes', soundOnly ? '1MiB' : '8MiB');
     // CRITICAL: no back-buffer — prevents TS demuxer from replaying old
     // audio packets when it re-reads across segment boundaries
     native.setProperty('demuxer-max-back-bytes', '0');
@@ -44,6 +50,19 @@ Future<void> applyLiveStreamMpvOptions(Player player) async {
     native.setProperty('cache-pause', 'no');
     native.setProperty('cache-pause-initial', 'no');
     // TESTED & REVERTED: hls-bitrate='min' (force lowest HLS variant).
+    //
+    // READ THIS BEFORE TREATING THE SOUND-MODE PIN AS A REGRESSION OF IT
+    // (2026-11-17). Sound mode now opens the lowest-bandwidth variant (or a
+    // separate audio rendition) by owner ruling — see `rules/tvninja.md`,
+    // "sound mode takes the smallest stream". That does NOT contradict the
+    // revert below, on two counts. The revert was measured in **video** mode,
+    // where the mid-GOP join errors it found ("non-existing PPS referenced",
+    // "decode_slice_header error") are video-decode errors; sound mode decodes
+    // no video at all, so they are unreachable there. And it selected inside
+    // mpv with this property, which applies to whatever mpv is given; the pin
+    // instead resolves the master in Dart and hands mpv a single media
+    // playlist, so mpv does no selecting. This property stays unset.
+    //
     // Hypothesis was that mpv defaulting to the top bitrate variant (RAI:
     // 1920x1080/~5.7Mbps) explained the gap vs. simpler low-bitrate sources
     // (TV8: 854x480, opens in ~1.5s). Measured result: forcing RAI down to

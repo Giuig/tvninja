@@ -30,7 +30,16 @@ import 'stream_kind.dart';
 class StreamKindCache {
   StreamKindCache._();
 
-  static const String _prefsKey = 'streamKindCache';
+  /// Bumped from `streamKindCache` when sound-mode URIs were added
+  /// (2026-11-17). Entries written before that carry a verdict but no URI,
+  /// and a video verdict lives 7 days while a strong audio one lives 30 — so
+  /// keeping them would leave "sound mode takes the smallest stream" silently
+  /// inert on every already-classified channel for up to a month, which is
+  /// exactly the owner's own device. Dropping them costs one probe per
+  /// channel on its next open, off the open path and inside the existing
+  /// 1200 ms budget. [_CacheEntry.fromJson] still tolerates an absent URI, so
+  /// nothing breaks if an old blob is ever read back.
+  static const String _prefsKey = 'streamKindCache2';
   static const int _maxEntries = 2000;
 
   static const Duration _strongAudioTtl = Duration(days: 30);
@@ -77,14 +86,42 @@ class StreamKindCache {
     return entry.verdict;
   }
 
+  /// The cached sound-mode URI for [uniqueId] — the variant or audio-rendition
+  /// URI **as the master playlist wrote it**, relative and unjoined — or
+  /// `null` on a miss, an expired entry, an entry that predates this field, a
+  /// channel with nothing worth pinning, or the web.
+  ///
+  /// Relative on purpose: the caller joins it against a freshly resolved
+  /// master every time it opens, because this entry can outlive the token in
+  /// any absolute URL by up to 30 days.
+  static String? getSoundModeUri(String uniqueId) {
+    if (kIsWeb) return null;
+    final entry = _memory[uniqueId];
+    if (entry == null) return null;
+    if (entry.expiresAt.isBefore(DateTime.now())) {
+      _memory.remove(uniqueId);
+      return null;
+    }
+    return entry.soundModeUri;
+  }
+
   /// Caches [verdict] for [uniqueId] with a TTL chosen by [verdict]'s own
   /// kind/confidence, persisting everything except an `unknown` verdict. A
   /// no-op on web.
-  static void put(String uniqueId, StreamKindVerdict verdict) {
+  ///
+  /// [soundModeUri] rides along on the same entry and the same TTL: it is
+  /// read from the same playlist body in the same probe, so there is nothing
+  /// to gain from expiring it separately.
+  static void put(
+    String uniqueId,
+    StreamKindVerdict verdict, {
+    String? soundModeUri,
+  }) {
     if (kIsWeb) return;
     _memory[uniqueId] = _CacheEntry(
       verdict: verdict,
       expiresAt: DateTime.now().add(_ttlFor(verdict)),
+      soundModeUri: soundModeUri,
     );
     _evictOverflow();
     if (verdict.kind != StreamKind.unknown) {
@@ -155,13 +192,23 @@ class _CacheEntry {
   final StreamKindVerdict verdict;
   final DateTime expiresAt;
 
-  const _CacheEntry({required this.verdict, required this.expiresAt});
+  /// The relative, unjoined sound-mode URI, or `null`. Only a relative URI is
+  /// ever stored — an absolute one would carry a CDN token that this entry
+  /// can outlive by up to 30 days.
+  final String? soundModeUri;
+
+  const _CacheEntry({
+    required this.verdict,
+    required this.expiresAt,
+    this.soundModeUri,
+  });
 
   Map<String, dynamic> toJson() => {
         'kind': verdict.kind.name,
         'confidence': verdict.confidence.name,
         'source': verdict.source.name,
         'expiresAt': expiresAt.toIso8601String(),
+        if (soundModeUri != null) 'soundUri': soundModeUri,
       };
 
   static _CacheEntry fromJson(Map<String, dynamic> json) {
@@ -172,6 +219,9 @@ class _CacheEntry {
         KindSource.values.byName(json['source'] as String),
       ),
       expiresAt: DateTime.parse(json['expiresAt'] as String),
+      // Absent in every entry written before 2026-11-17, and absent for any
+      // channel with nothing to pin -- read as a plain miss either way.
+      soundModeUri: json['soundUri'] as String?,
     );
   }
 }
