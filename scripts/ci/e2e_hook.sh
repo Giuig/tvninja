@@ -710,7 +710,83 @@ lock_summary() {
   if [ "$failures" -eq 0 ]; then LOCK_EXIT=0; else LOCK_EXIT=1; fi
 }
 
+# ---- sound_mode_pin_test.dart: the pin fetches the pinned playlist, nothing else ----------
+# Every other file here plays a progressive MP4 stand-in, so this is the only place CI ever
+# sees an HLS master. Without it the pin could regress to opening the master and the whole
+# emulator suite would stay green.
+#
+# The test's own markers say which URL the app opened. This hook adds the part the app cannot
+# vouch for: the fixture server's request log, an independent witness that the high and mid
+# variants were never fetched at all.
+PIN_PORT=8097
+
+sound_mode_pin_hook() {
+  local log="$OUT/pin_fixture_server.log" pid rc=0 want unwanted missing="" forbidden="" why
+  : > "$log"
+  python3 scripts/ci/serve_fixtures.py integration_test/fixtures "$PIN_PORT" "$log" \
+    > "$OUT/pin_fixture_server.out" 2>&1 &
+  pid=$!
+  trap 'kill "$pid" 2>/dev/null || true' EXIT
+  echo "hook: HLS fixture server pid=$pid on 127.0.0.1:$PIN_PORT; waiting up to ${WAIT_FOR_MARKER}s for E2E_PIN_DONE"
+
+  if ! wait_for E2E_PIN_DONE "$WAIT_FOR_MARKER"; then
+    why="marker E2E_PIN_DONE never appeared in $TESTOUT"
+    if grep -q E2E_PIN_FAILED "$TESTOUT" 2>/dev/null; then
+      why=$(grep -m1 E2E_PIN_FAILED "$TESTOUT")
+    fi
+    echo "GATING FAIL: $why"
+    {
+      echo "### sound-mode pin hook"
+      echo "- **FAIL**: $why, so nothing was checked"
+      echo "- fixture server log: \`e2e-out/pin_fixture_server.log\`"
+    } >> "$EXTRA"
+    return 1
+  fi
+  echo "hook: the test finished its legs; reading the fixture server log"
+
+  # What the device must have fetched.
+  for want in pin_master.m3u8 pin_v_low.m3u8 pin_rend_master.m3u8 pin_audio.m3u8 pin_seg.ts; do
+    grep -q "$want" "$log" || missing="$missing $want"
+  done
+  # What it must NOT have fetched. Either of these means the pin did not hold and mpv chose a
+  # variant for itself -- which is exactly the regression this file exists to catch.
+  for unwanted in pin_v_high.m3u8 pin_v_mid.m3u8; do
+    if grep -q "$unwanted" "$log"; then forbidden="$forbidden $unwanted"; fi
+  done
+
+  {
+    echo "### sound-mode pin hook"
+    if [ -n "$missing" ]; then
+      echo "- **FAIL**: the fixture server was never asked for:$missing"
+    else
+      echo "- the pinned playlists were fetched (low variant and audio rendition)"
+    fi
+    if [ -n "$forbidden" ]; then
+      echo "- **FAIL**: the server WAS asked for:$forbidden - the pin did not hold, mpv picked a variant"
+    else
+      echo "- neither pin_v_high.m3u8 nor pin_v_mid.m3u8 was ever requested"
+    fi
+    echo "- opened: $(grep -m2 E2E_PIN_OPENED "$TESTOUT" 2>/dev/null | tr '\n' ' ')"
+    echo "- evidence: \`e2e-out/pin_fixture_server.log\`"
+  } >> "$EXTRA"
+
+  if [ -n "$missing" ]; then
+    echo "GATING FAIL: fixture server never asked for:$missing"
+    rc=1
+  fi
+  if [ -n "$forbidden" ]; then
+    echo "GATING FAIL: fixture server was asked for:$forbidden"
+    rc=1
+  fi
+  echo "hook: done, pin check rc=$rc"
+  return "$rc"
+}
+
 case "${1:-sound_mode_test.dart}" in
+  sound_mode_pin_test.dart)
+    sound_mode_pin_hook
+    exit $?
+    ;;
   reconnect_audio_mode_test.dart)
     reconnect_audio_mode_hook
     exit $?

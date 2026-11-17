@@ -1,0 +1,11 @@
+#EXTM3U
+#EXT-X-VERSION:3
+# Muxed multi-variant, no separate audio rendition: the class the pin's quality
+# trade applies to. The CHEAPEST variant is listed LAST on purpose, so a pick by
+# position instead of by BANDWIDTH fails this fixture.
+#EXT-X-STREAM-INF:BANDWIDTH=3200000,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1280x720
+pin_v_high.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1200000,CODECS="avc1.4d401f,mp4a.40.2",RESOLUTION=640x360
+pin_v_mid.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=400000,CODECS="avc1.42c00d,mp4a.40.2",RESOLUTION=320x180
+pin_v_low.m3u8
