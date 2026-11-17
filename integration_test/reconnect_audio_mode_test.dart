@@ -12,8 +12,10 @@
 // `stop()` the way the page does, keeps the player mounted (the shape of the gatekeeper's
 // reproduction), starts sound mode on the stand-in station, and then holds for a while
 // with the page pumping. It logs the markers below; scripts/ci/e2e_hook.sh does the
-// Android side: no `ExoPlayerImpl: Init` after the stop, exactly one OpenSL ES player and
-// no AudioTrack, a playing media session and the sound mode's service.
+// Android side: no `ExoPlayerImpl: Init` after the stop, no live ExoPlayer engine and
+// exactly one audio player (mpv's, which the app logs as opened through `audiotrack`; the
+// player type no longer tells mpv from ExoPlayer), a playing media session and the sound
+// mode's service.
 //
 // The test also checks itself: the chain's attempt counter must not move after the stop
 // (an attempt that fires bumps it). That assertion runs last, after the markers, so the

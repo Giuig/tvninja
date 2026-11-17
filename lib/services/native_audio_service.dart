@@ -214,8 +214,12 @@ class NativeAudioService {
     await _errorSubscription?.cancel();
 
     // Reattach listeners
+    // The player these listeners belong to: [_audioPlayer] is swapped by
+    // [play], and what to judge is the stream of the player that reported it.
+    final player = _audioPlayer;
     _playerPlayingSubscription = _audioPlayer.stream.playing.listen((playing) {
       _recovery.playingChanged(playing);
+      if (playing) unawaited(_reportAudioOutput(player));
       if (_currentState.isPlaying == playing) return;
       _currentState = _currentState.copyWith(isPlaying: playing);
       _playbackStateController.add(_currentState);
@@ -249,9 +253,6 @@ class NativeAudioService {
       }
     });
 
-    // The player these listeners belong to: [_audioPlayer] is swapped by
-    // [play], and what to judge is the stream of the player that reported it.
-    final player = _audioPlayer;
     _playerCompletedSubscription = player.stream.completed.listen((completed) {
       if (completed) unawaited(_handleCompleted(player));
     });
@@ -270,6 +271,40 @@ class NativeAudioService {
       final url = _currentUrl;
       if (url != null) unawaited(_handleStreamError(url));
     });
+  }
+
+  /// The player whose audio output was last logged, so one player logs once.
+  static Player? _audioOutputReportedFor;
+
+  /// Logs which audio output mpv really opened for [player] (`audiotrack` or
+  /// `opensles`), as `[Audio] mpv audio output: <name>`, once per player.
+  ///
+  /// This is the e2e hook's way to tell the sound-mode engine apart: since
+  /// both mpv and ExoPlayer now play through an `android.media.AudioTrack`,
+  /// the player type in `dumpsys audio` no longer says which engine owns a
+  /// track (see `scripts/ci/e2e_hook.sh`). It also shows whether the
+  /// AudioTrack output held or mpv fell back to OpenSL ES. `current-ao` is
+  /// empty until mpv has opened the output, so it is polled for up to 5 s;
+  /// `unknown` means it never answered.
+  static Future<void> _reportAudioOutput(Player player) async {
+    if (identical(_audioOutputReportedFor, player)) return;
+    _audioOutputReportedFor = player;
+    var name = 'unknown';
+    try {
+      final native = player.platform as dynamic;
+      for (var i = 0; i < 20; i++) {
+        final String value = await (native.getProperty('current-ao') as Future)
+            .timeout(const Duration(milliseconds: 500));
+        if (value.isNotEmpty) {
+          name = value;
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+    } catch (_) {
+      // Disposed or unreadable: reported as `unknown`.
+    }
+    debugPrint('[Audio] mpv audio output: $name');
   }
 
   /// mpv reports the end of the current media. A live stream that ends is a

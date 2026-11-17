@@ -115,6 +115,60 @@ capture_state() {
 }
 STATE_LOG=""
 
+# ---- Which engine owns the audio: ExoPlayer (the picture) or mpv (the sound mode) ---------------
+# Until the audio-path-parity change these checks told the two apart by the player type in
+# `dumpsys audio`: `OpenSL ES` was mpv, `android.media.AudioTrack` was ExoPlayer. mpv now opens
+# its output as `audiotrack,opensles`, so BOTH engines are an android.media.AudioTrack and
+# counting the type strings would pass forever while checking nothing (in particular the "a
+# video engine is still playing behind the sound" detector would be blind). What separates
+# the engines now, all read from outside the app:
+#   - live ExoPlayer engines of the app = ExoPlayerImpl `Init` ids minus `Release` ids in a
+#     `logcat -v epoch ExoPlayerImpl:I` capture, for the app's own pid (Media3 logs both at INFO
+#     with the engine's hash). Zero in sound mode, one while the picture plays. The capture can
+#     lose nothing to the ring buffer because it streams from the start of the hook;
+#   - the app's players in dumpsys audio, counted whatever their type (one, not "one OpenSL
+#     and no AudioTrack"). One player with no live ExoPlayer can only be mpv's; one player
+#     with one live ExoPlayer can only be the picture's (while the service and session are
+#     off, which the same checks assert);
+#   - the app's own line `[Audio] mpv audio output: <name>` (NativeAudioService), read from the
+#     test output: the output mpv really opened. Its absence before the lock proves mpv has not
+#     played yet; `audiotrack` after it proves the fix is in effect and mpv did not fall back
+#     to OpenSL ES. The type strings are still recorded, informationally.
+
+# exo_live FILE PID: live ExoPlayer engines of PID in the capture FILE (0 for an empty PID).
+exo_live() {
+  [ -n "${2:-}" ] || { echo 0; return; }
+  tr -d '\r' < "$1" 2>/dev/null | awk -v p="$2" '
+    $2 == p && $5 == "ExoPlayerImpl:" {
+      if ($6 == "Init") live[$7] = 1
+      else if ($6 == "Release") delete live[$7]
+    }
+    END { n = 0; for (k in live) n++; print n + 0 }'
+}
+# exo_inits FILE PID: ExoPlayer constructions of PID in the capture FILE.
+exo_inits() {
+  [ -n "${2:-}" ] || { echo 0; return; }
+  tr -d '\r' < "$1" 2>/dev/null | awk -v p="$2" '$2 == p && $5 == "ExoPlayerImpl:" && $6 == "Init" { n++ } END { print n + 0 }'
+}
+# app_players UID OUTFILE: the app's audio players from dumpsys audio, one line each.
+app_players() {
+  adb_ shell dumpsys audio 2>&1 | tr -d '\r' | grep -E "u/pid:$1/" | sed 's/^ *//' > "$2" || true
+}
+# players_total FILE: how many audio players, of any type.
+players_total() { local n; n=$(grep -c 'AudioPlaybackConfiguration' "$1" 2>/dev/null); echo "${n:-0}"; }
+# players_types FILE: the types, for the record only (never gated).
+players_types() {
+  local a o
+  a=$(grep -c 'type:android.media.AudioTrack' "$1" 2>/dev/null)
+  o=$(grep -c 'type:OpenSL ES' "$1" 2>/dev/null)
+  echo "AudioTrack:${a:-0} OpenSL:${o:-0}"
+}
+# ao_markers / ao_last: the app's `[Audio] mpv audio output:` lines in the test output.
+ao_markers() { local n; n=$(grep -c '\[Audio\] mpv audio output:' "$TESTOUT" 2>/dev/null); echo "${n:-0}"; }
+ao_last() {
+  grep '\[Audio\] mpv audio output:' "$TESTOUT" 2>/dev/null | tail -n 1 | sed 's/.*mpv audio output: *//' | tr -d '\r '
+}
+
 # ---- reconnect_audio_mode_test.dart: a pending video reconnect chain vs sound mode ------------
 # The test mounts the player on a dead channel (a 404 from scripts/ci/loop_stream.py), lets
 # the reconnect chain run its first retry, calls stop() as the player page does for sound
@@ -127,9 +181,11 @@ STATE_LOG=""
 #     a `logcat` this hook starts itself (epoch timestamps), so the ring buffer cannot lose
 #     them; if that capture holds no Init at all the check could not see anything, and that
 #     is a failure too, never a pass;
-#   - at E2E_RECON_HOLD_DONE: exactly one OpenSL ES player (mpv, the sound mode) and no
-#     AudioTrack (ExoPlayer) of the app in dumpsys audio, the app's media session playing,
-#     exactly one playback service (the sound mode's), and a posted notification.
+#   - at E2E_RECON_HOLD_DONE: no live ExoPlayer engine of the app (the picture's engine) and
+#     exactly one audio player of the app in dumpsys audio, so the one player is mpv's, whose
+#     output the app logged as `audiotrack` (see "Which engine owns the audio" above: the player
+#     type no longer tells the engines apart), the app's media session playing, exactly one
+#     playback service (the sound mode's), and a posted notification.
 # Measured in the same window as the unit test of the fix: without `_reconnect.cancel()` in
 # stop(), a second engine appears ~4 s after the stop (see the plan's TASKS.md).
 RECON_GATING=1
@@ -166,13 +222,16 @@ reconnect_audio_mode_hook() {
       wait_for E2E_RECON_HOLD_DONE 60 || recon_problem "marker E2E_RECON_HOLD_DONE never appeared (the test did not get through its hold)"
       uid=$(adb_ shell pm list packages -U "$PKG" 2>/dev/null | tr -d '\r' | grep -m1 "package:$PKG " | sed 's/.*uid://')
       capture_state "reconnect hold"
-      adb_ shell dumpsys audio 2>&1 | tr -d '\r' | grep -E "u/pid:$uid/" | sed 's/^ *//' > "$OUT/hook_state_reconnect_hold.players.txt" || true
       players="$OUT/hook_state_reconnect_hold.players.txt"
-      R_OPENSL=$(grep -c 'type:OpenSL ES' "$players")
-      R_TRACK=$(grep -c 'type:android.media.AudioTrack' "$players")
-      STATE_LOG="${STATE_LOG%$'\n'}; OpenSL players=$R_OPENSL AudioTracks=$R_TRACK"$'\n'
-      [ "$R_OPENSL" -eq 1 ] || recon_problem "during the hold: $R_OPENSL OpenSL ES player(s) of the app (want exactly 1, the sound mode): $STATE_LOG"
-      [ "$R_TRACK" -eq 0 ] || recon_problem "during the hold: $R_TRACK AudioTrack(s) of the app (want 0, a video engine is playing behind the sound): $STATE_LOG"
+      app_players "$uid" "$players"
+      R_PLAYERS=$(players_total "$players")
+      R_EXO=$(exo_live "$initlog" "$app_pid")
+      R_AO=$(ao_last)
+      STATE_LOG="${STATE_LOG%$'\n'}; audio players=$R_PLAYERS live ExoPlayer engines=$R_EXO mpv output=${R_AO:-none} (types, informational: $(players_types "$players"))"$'\n'
+      [ -n "$app_pid" ] || recon_problem "during the hold: the app's pid is unknown, so its live video engines cannot be counted"
+      [ "$R_EXO" -eq 0 ] || recon_problem "during the hold: $R_EXO video engine(s) (ExoPlayer) of the app still alive behind the sound (want 0): $STATE_LOG"
+      [ "$R_PLAYERS" -eq 1 ] || recon_problem "during the hold: $R_PLAYERS audio player(s) of the app (want exactly 1, mpv's, the sound mode): $STATE_LOG"
+      [ "$R_AO" = audiotrack ] || recon_problem "during the hold: mpv's audio output is '${R_AO:-none}' (want audiotrack: the audio-path-parity fix, with no fall back to OpenSL ES): $STATE_LOG"
       [ "$S_PLAYING" -eq 1 ] || recon_problem "during the hold: the app's media session is not playing (states: $S_STATES)"
       [ "$S_RECORDS" -eq 1 ] || recon_problem "during the hold: $S_RECORDS playback service(s) (want the one sound-mode service)"
       [ "$S_NOTIF" -ge 1 ] || recon_problem "during the hold: no playback notification posted"
@@ -388,13 +447,15 @@ foreground_start_stop_hook() {
 # with the power key and reads what Android holds for the app.
 #
 # After KEYCODE_SLEEP, within 15 s (and still the same 3 s later): the app's media session
-# is playing (state 3), the playback service is foreground, the app's audio players are
-# exactly one OpenSL ES player (mpv, the sound mode) and no AudioTrack (ExoPlayer, the
-# picture), and logcat holds no ForegroundServiceStartNotAllowedException, no "did not then
-# call startForeground" and no FATAL EXCEPTION. After KEYCODE_WAKEUP and `wm
-# dismiss-keyguard`, within 15 s: no active session of the app, the playback service gone
-# (onDestroy logged), exactly one AudioTrack and no OpenSL player, and the same app process
-# at the end.
+# is playing (state 3), the playback service is foreground, no ExoPlayer engine (the picture)
+# is alive and the app has exactly one audio player, which is then mpv's (the sound mode) and
+# which the app logs as opened through `audiotrack`, and logcat holds no
+# ForegroundServiceStartNotAllowedException, no "did not then call startForeground" and no
+# FATAL EXCEPTION. After KEYCODE_WAKEUP and `wm dismiss-keyguard`, within 15 s: no active
+# session of the app, the playback service gone (onDestroy logged), exactly one live
+# ExoPlayer engine and exactly one audio player, and the same app process at the end. The
+# player TYPE is not used to tell the engines apart (both are android.media.AudioTrack now,
+# see "Which engine owns the audio" above).
 #
 # GATING (LOCK_GATING=1): a failed check is written to the summary, to the hook's output (as a
 # ::warning annotation too) and fails the run. The file therefore sits in e2e-files, which is
@@ -418,23 +479,31 @@ lock_problem() {
   echo "::warning title=Lock check::${msg}"
 }
 
-# lock_snapshot LABEL: capture_state plus the two things only this test asks about. Sets
-# L_FG (the playback service is a foreground service) and L_OPENSL / L_TRACK (the app's
-# OpenSL ES players and AudioTracks in dumpsys audio, whatever their state).
+# lock_snapshot LABEL: capture_state plus the things only this test asks about. Sets
+# L_FG (the playback service is a foreground service), L_PLAYERS (the app's audio players in
+# dumpsys audio, whatever their type or state), L_EXO (the app's live ExoPlayer engines, from
+# the capture LOCK_EXO_LOG) and L_TYPES (the player types, for the record). See "Which engine
+# owns the audio" above for why the type no longer tells mpv from ExoPlayer.
 lock_snapshot() {
   local f="$OUT/hook_state_$1"
   capture_state "$1"
   L_FG=$(grep -c 'isForeground=true' "$f.services.txt")
-  adb_ shell dumpsys audio 2>&1 | tr -d '\r' | grep -E "u/pid:$APP_UID/" | sed 's/^ *//' > "$f.players.txt" || true
-  L_OPENSL=$(grep -c 'type:OpenSL ES' "$f.players.txt")
-  L_TRACK=$(grep -c 'type:android.media.AudioTrack' "$f.players.txt")
-  STATE_LOG="${STATE_LOG%$'\n'}; foreground=$L_FG OpenSL players=$L_OPENSL AudioTracks=$L_TRACK"$'\n'
+  app_players "$APP_UID" "$f.players.txt"
+  L_PLAYERS=$(players_total "$f.players.txt")
+  L_TYPES=$(players_types "$f.players.txt")
+  LOCK_APP_PID=$(adb_ shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')
+  L_EXO=$(exo_live "$LOCK_EXO_LOG" "$LOCK_APP_PID")
+  STATE_LOG="${STATE_LOG%$'\n'}; foreground=$L_FG audio players=$L_PLAYERS live ExoPlayer engines=$L_EXO (types, informational: $L_TYPES)"$'\n'
 }
 lock_snapshot_line() {
-  echo "sessions=$S_SESSIONS active=$S_ACTIVE playing=$S_PLAYING states=[${S_STATES% }] playback services=$S_RECORDS foreground=$L_FG OpenSL players=$L_OPENSL AudioTracks=$L_TRACK notifications=$S_NOTIF"
+  echo "sessions=$S_SESSIONS active=$S_ACTIVE playing=$S_PLAYING states=[${S_STATES% }] playback services=$S_RECORDS foreground=$L_FG audio players=$L_PLAYERS live ExoPlayer engines=$L_EXO (types: $L_TYPES) notifications=$S_NOTIF"
 }
-lock_sound_ok() { [ "$S_PLAYING" -eq 1 ] && [ "$L_FG" -ge 1 ] && [ "$L_OPENSL" -eq 1 ] && [ "$L_TRACK" -eq 0 ]; }
-lock_video_ok() { [ "$S_ACTIVE" -eq 0 ] && [ "$S_RECORDS" -eq 0 ] && [ "$L_OPENSL" -eq 0 ] && [ "$L_TRACK" -eq 1 ]; }
+# Sound: a playing session, a foreground service, no video engine alive and exactly one audio
+# player, which can then only be mpv's.
+lock_sound_ok() { [ "$S_PLAYING" -eq 1 ] && [ "$L_FG" -ge 1 ] && [ "$L_EXO" -eq 0 ] && [ "$L_PLAYERS" -eq 1 ]; }
+# Video: no session, no service, exactly one live ExoPlayer engine and exactly one audio player,
+# which can then only be the picture's (a second player would be mpv playing behind it).
+lock_video_ok() { [ "$S_ACTIVE" -eq 0 ] && [ "$S_RECORDS" -eq 0 ] && [ "$L_EXO" -eq 1 ] && [ "$L_PLAYERS" -eq 1 ]; }
 
 # lock_poll LABEL CHECK SECONDS: snapshots every second until CHECK holds or SECONDS pass.
 # Sets POLL_OK (1/0) and POLL_AT (seconds until it held). The polls are left out of the
@@ -481,8 +550,9 @@ lock_permission_watch() {
 }
 
 lock_screen_hook() {
-  local pid_before pid_after offset slice="$OUT/hook_lock_logcat.txt" fatal destroys summary_line
+  local pid_before pid_after offset slice="$OUT/hook_lock_logcat.txt" fatal destroys summary_line ao
   SLEEP_AT=""
+  LOCK_AO=""
   WAKE_AT=""
   LOCK_PID_LINE=""
   LOCK_FATAL=""
@@ -490,7 +560,14 @@ lock_screen_hook() {
   FIX_PID=$!
   lock_permission_watch &
   WATCH_PID=$!
-  trap 'kill "$FIX_PID" "$WATCH_PID" 2>/dev/null || true' EXIT
+  # Every ExoPlayer construction and release of this run (epoch timestamps, the app's pid is
+  # filtered later): the live video engines, see "Which engine owns the audio" above.
+  LOCK_EXO_LOG="$OUT/hook_exo_lock.txt"
+  : > "$LOCK_EXO_LOG"
+  adb_ wait-for-device > /dev/null 2>&1 || true
+  adb_ logcat -v epoch 'ExoPlayerImpl:I' '*:S' > "$LOCK_EXO_LOG" 2>&1 &
+  EXO_CAP_PID=$!
+  trap 'kill "$FIX_PID" "$WATCH_PID" "$EXO_CAP_PID" 2>/dev/null || true' EXIT
   echo "hook: fixture server pid=$FIX_PID on 127.0.0.1:$LOCK_PORT; waiting up to ${WAIT_FOR_MARKER}s for E2E_VIDEO_PLAYING in $TESTOUT"
 
   if ! wait_for E2E_VIDEO_PLAYING "$WAIT_FOR_MARKER"; then
@@ -508,9 +585,11 @@ lock_screen_hook() {
   [ -n "$APP_UID" ] || lock_problem "could not read the app's uid, so its audio players cannot be counted"
 
   lock_snapshot "video playing, before the lock"
-  if ! { [ "$S_ACTIVE" -eq 0 ] && [ "$S_RECORDS" -eq 0 ] && [ "$L_OPENSL" -eq 0 ] && [ "$L_TRACK" -eq 1 ]; }; then
-    lock_problem "before the lock the picture was not what a lock test starts from (want no session, no service, 1 AudioTrack, 0 OpenSL): $(lock_snapshot_line)"
+  if ! lock_video_ok; then
+    lock_problem "before the lock the picture was not what a lock test starts from (want no session, no service, 1 live ExoPlayer engine, 1 audio player): $(lock_snapshot_line)"
   fi
+  # mpv has not played yet, so the app has not logged an audio output for it.
+  [ "$(ao_markers)" -eq 0 ] || lock_problem "before the lock mpv had already opened an audio output (the app logged '$(ao_last)'), so the sound mode was already running behind the picture"
 
   adb_ logcat -b crash -c > /dev/null 2>&1 || true
   offset=$(wc -l < "$LOGCAT" 2>/dev/null || echo 0)
@@ -529,8 +608,18 @@ lock_screen_hook() {
     lock_sound_ok || lock_problem "after sleep the sound state did not hold: it was right after ${SLEEP_AT}s and wrong 3 s later: $(lock_snapshot_line)"
   else
     lock_snapshot "after sleep"
-    lock_problem "within 15 s of sleep the app was not playing as sound (want session playing, foreground service, 1 OpenSL, 0 AudioTrack): $(lock_snapshot_line)"
+    lock_problem "within 15 s of sleep the app was not playing as sound (want session playing, foreground service, 0 live ExoPlayer engines, 1 audio player): $(lock_snapshot_line)"
   fi
+  # The one player is mpv's by elimination; the app's own log says which output it opened.
+  # The line follows the first frames by a moment (the app polls mpv for up to 5 s).
+  ao=""
+  for _ in $(seq 1 12); do
+    ao=$(ao_last)
+    [ -n "$ao" ] && break
+    sleep 1
+  done
+  LOCK_AO="${ao:-none} (log lines: $(ao_markers))"
+  [ "$ao" = audiotrack ] || lock_problem "after sleep mpv's audio output is '${ao:-none}' (want audiotrack: the audio-path-parity fix, with no fall back to OpenSL ES)"
   adb_ shell dumpsys power 2>&1 | tr -d '\r' | grep -m1 'mWakefulness=' > "$OUT/hook_lock_wakefulness_asleep.txt" || true
 
   # ---- WAKEUP ----
@@ -545,7 +634,7 @@ lock_screen_hook() {
     lock_video_ok || lock_problem "after wake the video state did not hold: it was right after ${WAKE_AT}s and wrong 3 s later: $(lock_snapshot_line)"
   else
     lock_snapshot "after wake"
-    lock_problem "within 15 s of wake the app was not back on video (want no active session, no service, 0 OpenSL, 1 AudioTrack): $(lock_snapshot_line)"
+    lock_problem "within 15 s of wake the app was not back on video (want no active session, no service, 1 live ExoPlayer engine, 1 audio player): $(lock_snapshot_line)"
   fi
   adb_ shell dumpsys power 2>&1 | tr -d '\r' | grep -m1 'mWakefulness=' > "$OUT/hook_lock_wakefulness_awake.txt" || true
 
@@ -604,6 +693,7 @@ lock_summary() {
     echo "wakefulness after wake:   $(cat "$OUT/hook_lock_wakefulness_awake.txt" 2>/dev/null)"
     echo "the app's own view (test output):"
     grep -E 'E2E_LIFECYCLE|E2E_VIDEO_AFTER_UNLOCK|E2E_VIDEO_FAILED' "$TESTOUT" 2>/dev/null || echo "(none)"
+    echo "mpv's audio output as the app logged it (want audiotrack): ${LOCK_AO:-n/a}"
     echo "the app's players, while locked:"
     cat "$OUT/hook_state_after sleep.players.txt" 2>/dev/null || echo "(none)"
     echo "the app's players, after the wake:"
