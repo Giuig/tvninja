@@ -154,6 +154,8 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
     const video = document.getElementById('video');
     const unmuteBtn = document.getElementById('unmute-btn');
     const urlsToTry = [$urlsJson];
+    // The stream exactly as the playlist lists it (before any proxy wrapping).
+    const originalStreamUrl = '${_escapeJs(originalUrl)}';
     var currentUrlIndex = 0;
     var userHasUnmuted = localStorage.getItem('tvninja_unmuted') === 'true';
     var isMuted = false;
@@ -248,6 +250,99 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
       }
     }
     
+    // ---- Proxy-aware loader ------------------------------------------
+    // hls.js resolves a playlist's relative URIs against the URL it fetched
+    // the playlist from. When that URL is the allorigins proxy, a segment
+    // named "index_1.ts" becomes https://api.allorigins.win/index_1.ts: wrong
+    // host, no CORS header, the stream can never play. So for the proxied
+    // source only, every request is rewritten to go THROUGH the proxy, to the
+    // real host. (Not to the original http:// URL: that would be blocked as
+    // mixed content on the https site, which is the bug this fixes.)
+    // xhrSetup cannot do this: hls.js calls it after xhr.open().
+    // BEGIN proxy-loader (run by test/web_proxy_loader_test.js; keep this block free of dollar signs and backslashes, it lives inside a Dart string)
+    // Nothing in here may throw: an exception inside load() stalls hls.js with
+    // no error at all, and one at script level would kill the whole player,
+    // including the sources that never touch the proxy. Anything that cannot be
+    // worked out is passed through unchanged, which fails exactly the way an
+    // unproxied request does on main.
+    var PROXY_PREFIX = 'https://api.allorigins.win/raw?url=';
+    var PROXY_ORIGIN = 'https://api.allorigins.win/';
+    // '' means "unknown": relative URIs are then left alone.
+    var manifestBase = '';
+    var levelBases = {};
+
+    // Directory of a URL, or '' when it is not a valid absolute URL.
+    function dirOf(u) {
+      try { return new URL('./', u).href; } catch (e) { return ''; }
+    }
+
+    // rel resolved against base, or null when that is not possible.
+    function resolveUrl(rel, base) {
+      if (!base) return null;
+      try { return new URL(rel, base).href; } catch (e) { return null; }
+    }
+
+    function proxyWrap(u) {
+      return PROXY_PREFIX + encodeURIComponent(u);
+    }
+
+    function unwrapProxy(u) {
+      try { return decodeURIComponent(u.substring(PROXY_PREFIX.length)); } catch (e) { return ''; }
+    }
+
+    // Directory a relative URI should be resolved against. Playlist requests
+    // (variants, audio, subtitles) are named relative to the MASTER playlist.
+    // Segments and keys are named relative to THEIR variant playlist, which
+    // may live in another directory than the master, so remember each one.
+    function baseFor(context) {
+      if (context.type) return manifestBase;
+      var level = context.frag ? context.frag.level : undefined;
+      return (level !== undefined && levelBases[level]) || manifestBase;
+    }
+
+    function rewriteForProxy(context) {
+      var u = context.url;
+      try {
+        // Already proxied (the playlist request itself).
+        if (u.indexOf(PROXY_PREFIX) === 0) return u;
+        // A relative URI hls.js resolved against the proxy origin: re-resolve
+        // it against the real playlist directory, then proxy it.
+        if (u.indexOf(PROXY_ORIGIN) === 0) {
+          var abs = resolveUrl(u.substring(PROXY_ORIGIN.length), baseFor(context));
+          return abs === null ? u : proxyWrap(abs);
+        }
+        // Any other absolute URI (variant or segment named in full).
+        return proxyWrap(u);
+      } catch (e) {
+        return u;
+      }
+    }
+
+    function makeProxyLoader() {
+      manifestBase = dirOf(originalStreamUrl);
+      levelBases = {};
+      return class ProxyLoader extends Hls.DefaultConfig.loader {
+        load(context, config, callbacks) {
+          try {
+            var rewritten = rewriteForProxy(context);
+            if (rewritten.indexOf(PROXY_PREFIX) === 0) {
+              if (context.type === 'manifest') {
+                manifestBase = dirOf(unwrapProxy(rewritten));
+              } else if (context.type === 'level' && context.level !== undefined) {
+                var dir = dirOf(unwrapProxy(rewritten));
+                if (dir) levelBases[context.level] = dir;
+              }
+            }
+            context.url = rewritten;
+          } catch (e) {
+            // leave context.url as it was
+          }
+          super.load(context, config, callbacks);
+        }
+      };
+    }
+    // END proxy-loader
+
     function loadStream(url) {
       log('Loading: ' + url.substring(0, 50) + '...');
       console.log('[WebVideo] Trying URL ' + (currentUrlIndex + 1) + ': ' + url);
@@ -261,7 +356,11 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
         var networkRecoveries = 0;
         var mediaRecoveries = 0;
 
+        // Only the proxied source gets the rewriting loader; the https and
+        // direct sources keep hls.js's default loader unchanged.
+        var proxied = url.indexOf(PROXY_PREFIX) === 0;
         hls = new Hls({
+          loader: proxied ? makeProxyLoader() : Hls.DefaultConfig.loader,
           enableWorker: true,
           lowLatencyMode: false,
           backBufferLength: 30,
