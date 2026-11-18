@@ -3,6 +3,27 @@ import 'dart:ui_web' as ui_web;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
+import 'package:tvninja/services/channel_visibility.dart'
+    show isPlainHttp, upgradeToHttps;
+
+/// Whether the page itself is served over https, which is the condition that
+/// makes the mixed-content block apply at all.
+///
+/// On `http://localhost` (development) and on any http-hosted build, plain-http
+/// streams load normally — so this must never be conflated with "is this the
+/// web build". `Uri.base` is the document URL on web.
+bool get _pageIsHttps => Uri.base.isScheme('https');
+
+/// Shown instead of the engine's generic text when the page is https and the
+/// stream is plain http. The browser blocks that combination before any
+/// request is made, so there is no status code to report and nothing to retry.
+///
+/// Un-localized English, matching every other string in this path: see the
+/// COUPLING NOTE on `UnifiedVideoPlayer._friendlyError` — `player_page.dart`'s
+/// `_errorIcon()` string-matches these to choose an icon, so the wording is
+/// load-bearing and must not be changed without changing that too.
+const String kHttpOnlyOnHttpsMessage =
+    'http-only stream — a browser cannot load it on an https page';
 
 class WebVideoPlayerWidget extends StatefulWidget {
   final String url;
@@ -87,9 +108,15 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
     final originalUrl = widget.url;
     final List<String> urlsToTry = [];
 
-    if (originalUrl.startsWith('http://')) {
-      // Try HTTPS version first (if server supports it)
-      urlsToTry.add(originalUrl.replaceFirst('http://', 'https://'));
+    if (isPlainHttp(originalUrl)) {
+      // Try HTTPS version first (if server supports it).
+      //
+      // Both halves go through `channel_visibility` on purpose. The old
+      // `startsWith('http://')` + `replaceFirst('http://', ...)` pair was
+      // case-sensitive, so `HTTP://host/x` matched neither: no upgrade was
+      // attempted, and had the test matched while the replace did not, the
+      // "upgraded" candidate would have been the original URL added twice.
+      urlsToTry.add(upgradeToHttps(originalUrl));
     } else {
       urlsToTry.add(originalUrl);
     }
@@ -103,15 +130,31 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
     // every request), so it was pure dead weight. codetabs.com was tried as
     // a replacement and also dropped: it reaches the target fine but never
     // sends back an Access-Control-Allow-Origin header of its own, so the
-    // browser blocks it identically to having no proxy at all. allorigins.win
-    // is the only public proxy of the ones tested that ever actually works —
-    // it's slow and frequently times out, but it's better than nothing until
-    // this project can host its own proxy (see PR description).
-    urlsToTry.add(
-        'https://api.allorigins.win/raw?url=${Uri.encodeComponent(originalUrl)}');
+    // browser blocks it identically to having no proxy at all.
+    //
+    // **allorigins.win was dropped too, 2026-11-18.** It is down, not merely
+    // slow: measured HTTP 522 after 19.6 s, with a browser-shaped request. It
+    // was the ONLY entry in this list that could rescue a blocked stream, so
+    // every such channel failed anyway — but took ~20 s to do it, because
+    // hls.js retries a manifest timeout before giving up. Removing it costs no
+    // playable channel and returns that time to the user.
+    //
+    // The proxy-aware loader further down is deliberately LEFT IN PLACE and is
+    // now dormant: nothing in `urlsToTry` matches `PROXY_PREFIX`, so
+    // `rewriteForProxy` never fires. It stays because it is the hard part of
+    // ever using a proxy again (it must rewrite sub-playlists, keys and
+    // segments, not just the manifest) and it is covered by
+    // `test/web_proxy_loader.test.js`. Point `PROXY_PREFIX` at a live endpoint
+    // and it wakes up unchanged — note that it still names allorigins, which is
+    // the DEAD endpoint, so change it before re-enabling anything here.
 
-    if (originalUrl.startsWith('http://')) {
-      urlsToTry.add(originalUrl); // Last resort: direct HTTP
+    // Last resort, direct http — but ONLY when this page is not itself https.
+    // From an https page the browser blocks it as mixed content before any
+    // request leaves, so trying it cannot succeed and only adds a timeout. On
+    // an http page (localhost during development, or an http-hosted build) it
+    // is the one thing that does work, which is why it is not simply deleted.
+    if (isPlainHttp(originalUrl) && !_pageIsHttps) {
+      urlsToTry.add(originalUrl);
     }
 
     // Create JSON array of URLs for JavaScript
@@ -549,7 +592,13 @@ class WebVideoPlayerWidgetState extends State<WebVideoPlayerWidget> {
       });
       widget.onPlayingChanged?.call(false);
     } else if (message.startsWith('error:')) {
-      final error = message.substring(6);
+      // The engine cannot tell us a mixed-content block happened — the request
+      // never left the page, so hls.js reports a generic network error and the
+      // user used to read "Stream unavailable". That reason IS knowable, with
+      // no network call: an http URL on an https page can never load. Say so.
+      final error = isPlainHttp(widget.url) && _pageIsHttps
+          ? kHttpOnlyOnHttpsMessage
+          : message.substring(6);
       setState(() {
         _hasError = true;
         _errorMessage = error;

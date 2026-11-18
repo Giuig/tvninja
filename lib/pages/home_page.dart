@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:tvninja/config/config.dart';
 import 'package:tvninja/l10n/app_localizations.dart';
 import 'package:tvninja/pages/player_page.dart';
+import 'package:tvninja/services/channel_visibility.dart';
 import 'package:tvninja/services/native_audio_service.dart';
 import 'package:tvninja/widgets/channel_logo.dart';
 
@@ -20,7 +21,16 @@ class HomePage extends StatelessWidget {
     }
 
     final stats = context.watch<AppStatsNotifier>();
-    final favorites = stats.favoriteChannels;
+    // Filter the STRIP, not just the hand-off to the player. Filtering only at
+    // the tap was a worse bug than the one it fixed: the card still rendered,
+    // but `indexOf` on the filtered list returned -1, which `PlayerPage` reads
+    // as a real index, resets to 0 and plays a DIFFERENT channel — or throws a
+    // RangeError when every favourite is http. Hiding the card is the fix; the
+    // tap handler filters too, so the two cannot disagree.
+    final favorites = visibleChannels(
+      stats.favoriteChannels,
+      blockPlainHttp: platformBlocksPlainHttp(),
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -249,6 +259,10 @@ class _FavoriteCard extends StatelessWidget {
   Future<void> _playChannel(BuildContext context) async {
     final stats = context.read<AppStatsNotifier>();
     stats.addToRecentlyWatched(channel);
+    final openableFavorites = visibleChannels(
+      stats.favoriteChannels,
+      blockPlainHttp: platformBlocksPlainHttp(),
+    );
     final currentUrl = NativeAudioService.currentUrl;
     final isAudioPlaying = NativeAudioService.currentState.isPlaying ||
         NativeAudioService.isBuffering;
@@ -265,8 +279,12 @@ class _FavoriteCard extends StatelessWidget {
       MaterialPageRoute(
         builder: (_) => PlayerPage(
           channel: channel,
-          channels: stats.favoriteChannels,
-          initialIndex: stats.favoriteChannels.indexOf(channel),
+          // Platform-filtered, for the same reason as the playlist's own
+          // hand-off: a favourited http channel cannot load on an https page,
+          // so zapping through favourites must not land on it. Same list
+          // instance on native, so Android is unaffected.
+          channels: openableFavorites,
+          initialIndex: openableFavorites.indexOf(channel),
           initialAudioOnly: shouldStartInAudioOnly,
         ),
       ),

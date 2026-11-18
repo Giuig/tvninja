@@ -300,11 +300,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    // Initialize channel list
-    _channels = widget.channels ?? [widget.channel];
-    _currentIndex = widget.initialIndex ??
-        _channels.indexWhere((c) => c.url == widget.channel.url);
-    if (_currentIndex == -1) {
+    // Initialize channel list.
+    //
+    // An EMPTY `widget.channels` is treated as "none given", not as a list to
+    // index into: `_channels[0]` on an empty list throws a RangeError and takes
+    // the whole player down. A caller that filters its list can legitimately
+    // hand over an empty one.
+    final provided = widget.channels;
+    _channels =
+        (provided == null || provided.isEmpty) ? [widget.channel] : provided;
+    // A supplied index is trusted only if it is actually in range. `indexOf` on
+    // a filtered list yields -1, which is non-null and so used to survive the
+    // `??`, land on the `== -1` branch and silently open channel 0 — the wrong
+    // channel. Re-resolve by url first, and only then fall back to 0.
+    final supplied = widget.initialIndex;
+    _currentIndex = (supplied != null &&
+            supplied >= 0 &&
+            supplied < _channels.length)
+        ? supplied
+        : _channels.indexWhere((c) => c.url == widget.channel.url);
+    if (_currentIndex < 0) {
       _currentIndex = 0;
     }
     _currentChannel = _channels[_currentIndex];
