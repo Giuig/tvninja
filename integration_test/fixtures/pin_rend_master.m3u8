@@ -1,0 +1,9 @@
+#EXTM3U
+#EXT-X-VERSION:4
+# A separate audio rendition: the zero-quality-cost case. The rendition must win
+# over the lowest variant, so this fixture also has a cheap variant to lose to it.
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Main",DEFAULT=YES,AUTOSELECT=YES,URI="pin_audio.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=3200000,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1280x720,AUDIO="aud"
+pin_v_high.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=400000,CODECS="avc1.42c00d,mp4a.40.2",RESOLUTION=320x180,AUDIO="aud"
+pin_v_low.m3u8

@@ -31,3 +31,9 @@
 *.woff binary
 *.woff2 binary
 *.mp4 binary
+
+# HLS fixture media (integration_test/fixtures). An MPEG-TS segment is binary:
+# without this git normalises its line endings and the emulator cannot play it.
+integration_test/fixtures/*.ts binary
+# Playlists are text, pinned to LF so the fixture bytes are identical everywhere.
+*.m3u8 text eol=lf
