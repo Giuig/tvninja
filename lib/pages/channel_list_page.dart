@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:tvninja/config/config.dart';
 import 'package:tvninja/l10n/app_localizations.dart';
 import 'package:tvninja/pages/player_page.dart';
+import 'package:tvninja/services/channel_visibility.dart';
 import 'package:tvninja/services/native_audio_service.dart';
 import 'package:tvninja/widgets/channel_logo.dart';
 
@@ -111,8 +112,19 @@ class _ChannelListPageState extends State<ChannelListPage> {
 
   Widget _buildChannelsList(Playlist playlist, Set<String> favoriteIds) {
     final allChannels = playlist.channels;
-    final groups = _getGroups(allChannels);
-    final filteredChannels = _getFilteredChannels(allChannels);
+    // Drop what this platform cannot open, ONCE, above both the group chips
+    // and the list — otherwise a chip can offer a group whose every channel is
+    // hidden, and the `nChannels` count can disagree with the rows on screen.
+    //
+    // `allChannels` stays bound to the unfiltered list on purpose: it feeds the
+    // `isEmpty` check below, and a playlist that is entirely http on web should
+    // fall through to "no channels match", not claim the playlist is empty.
+    final openable = visibleChannels(
+      allChannels,
+      blockPlainHttp: platformBlocksPlainHttp(),
+    );
+    final groups = _getGroups(openable);
+    final filteredChannels = _getFilteredChannels(openable);
 
     if (allChannels.isEmpty) {
       return Center(
@@ -249,7 +261,7 @@ class _ChannelListPageState extends State<ChannelListPage> {
                             Navigator.of(context, rootNavigator: true).push(
                               MaterialPageRoute(
                                 builder: (_) => PlayerPage(
-                                  // The whole playlist, not `filteredChannels`.
+                                  // `openable`, not `filteredChannels`.
                                   // Search and the group filter are a way to
                                   // *find* a channel; once you are watching, the
                                   // numbering should be the channel's real
@@ -258,9 +270,20 @@ class _ChannelListPageState extends State<ChannelListPage> {
                                   // behind. It also keeps the quick list's row
                                   // numbers and the n/total chip agreeing with
                                   // each other and with the playlist.
+                                  //
+                                  // The platform filter is NOT such a filter and
+                                  // must be applied here too. A channel the
+                                  // browser cannot load is not "a filter you
+                                  // left behind" — it can never play on this
+                                  // platform, so zapping onto it is always
+                                  // wrong. Hiding it from the list while
+                                  // zapping still landed on it was the gap this
+                                  // closes. On native `openable` IS
+                                  // `playlist.channels` (same instance), so
+                                  // nothing changes there.
                                   channel: channel,
-                                  channels: playlist.channels,
-                                  initialIndex: playlist.channels.indexOf(channel),
+                                  channels: openable,
+                                  initialIndex: openable.indexOf(channel),
                                   initialAudioOnly: shouldStartInAudioOnly,
                                 ),
                               ),
